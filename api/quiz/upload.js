@@ -1,12 +1,11 @@
-import os
-importPath from "path";
+import path from "path";
 import { fileURLToPath } from "url";
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = importPath.dirname(__filename);
-
 import formidable from "formidable";
 import { extractPdfText } from "../services/pdfService.js";
 import { generateQuizFromText } from "../services/geminiService.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export const config = {
   api: {
@@ -21,6 +20,7 @@ export default async function handler(req, res) {
   }
 
   const form = formidable({ multiples: false, uploadDir: "/tmp", keepExtensions: true });
+
   form.parse(req, async (err, fields, files) => {
     if (err) {
       console.error("Form parse error:", err);
