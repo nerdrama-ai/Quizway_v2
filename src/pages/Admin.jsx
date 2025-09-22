@@ -75,7 +75,7 @@ export default function Admin({ onHome }) {
       id: Date.now().toString(),
       title: "Untitled Topic",
       description: "",
-      timer: 0, // seconds
+      timer: 0,
       keywords: [],
       questions: [],
     }
@@ -124,7 +124,7 @@ export default function Admin({ onHome }) {
     saveAndSetTopics(updated)
   }
 
-  /** ---------- NEW: Generate Quiz From PDF ---------- **/
+  /** ---------- FIXED: Generate Quiz From PDF ---------- **/
   const handleUploadPdf = async (file) => {
     if (!file || !activeTopic) return
     setLoadingQuiz(true)
@@ -132,8 +132,8 @@ export default function Admin({ onHome }) {
       const formData = new FormData()
       formData.append("file", file)
 
-      // Send to backend endpoint
-      const res = await fetch("/api/upload-pdf", {
+      // ✅ Correct backend endpoint
+      const res = await fetch("/api/quiz/upload", {
         method: "POST",
         body: formData,
       })
@@ -141,19 +141,28 @@ export default function Admin({ onHome }) {
       if (!res.ok) throw new Error("Failed to process PDF")
 
       const data = await res.json()
-
       if (!data.questions) throw new Error("No questions returned")
+
+      // ✅ Normalize questions: ensure "correct" key exists
+      const normalized = data.questions.map((q, i) => ({
+        id: q.id || String(i + 1),
+        question: q.question,
+        options: q.options,
+        correct: q.answer ?? q.correct ?? 0,
+        hint: q.hint || "",
+        explanation: q.explanation || "",
+      }))
 
       const updated = topics.map((t) =>
         t.id === activeTopic.id
-          ? { ...t, questions: [...t.questions, ...data.questions] }
+          ? { ...t, questions: [...t.questions, ...normalized] }
           : t
       )
       saveAndSetTopics(updated)
       addToast("Quiz generated from PDF", "success")
     } catch (err) {
       console.error(err)
-      addToast("Error generating quiz", "warning")
+      addToast("Error generating quiz: " + err.message, "warning")
     } finally {
       setLoadingQuiz(false)
     }
