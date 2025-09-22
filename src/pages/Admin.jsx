@@ -10,7 +10,7 @@ export default function Admin({ onHome }) {
   const [error, setError] = useState("")
 
   const ADMIN_USER = "admin"
-  const ADMIN_PASS = "password123"
+  const ADMIN_PASS = "pass"
 
   useEffect(() => {
     const storedAuth = localStorage.getItem("isAuthenticated")
