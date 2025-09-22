@@ -30,7 +30,7 @@ export default async function handler(req, res) {
 
   form.parse(req, async (err, fields, files) => {
     if (err) {
-      console.error("Form parse error:", err);
+      console.error("❌ Form parse error:", err);
       return res.status(400).json({ error: "Failed to parse upload" });
     }
 
@@ -41,17 +41,35 @@ export default async function handler(req, res) {
 
     try {
       const filePath = file.filepath || file.path;
-      const text = await extractPdfText(filePath);
-
-      if (!text || text.trim().length < 20) {
-        return res.status(400).json({ error: "PDF too short or unreadable" });
+      if (!filePath) {
+        console.error("❌ File path missing:", file);
+        return res.status(400).json({ error: "Invalid uploaded file path" });
       }
 
+      // Extract text from PDF
+      const text = await extractPdfText(filePath);
+      console.log("✅ Extracted PDF text length:", text?.length || 0);
+
+      if (!text || text.trim().length < 20) {
+        return res.status(400).json({
+          error: "PDF too short or unreadable (might be scanned images)",
+        });
+      }
+
+      // Generate quiz
       const quiz = await generateQuizFromText(text);
-      return res.json({ questions: quiz });
+      if (!quiz || quiz.length === 0) {
+        console.error("❌ Quiz generation returned empty result");
+        return res.status(500).json({ error: "Quiz generation failed" });
+      }
+
+      console.log("✅ Generated quiz with", quiz.length, "questions");
+      return res.status(200).json({ questions: quiz });
     } catch (e) {
-      console.error("Upload handler error:", e);
-      return res.status(500).json({ error: "Failed to process PDF" });
+      console.error("❌ Upload handler error:", e);
+      return res
+        .status(500)
+        .json({ error: "Unexpected server error while processing PDF" });
     }
   });
 }
