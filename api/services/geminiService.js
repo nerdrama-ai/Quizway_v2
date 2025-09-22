@@ -1,34 +1,48 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
+const apiKey = process.env.GEMINI_API_KEY || "";
 
+/**
+ * Generate quiz questions from text.
+ * Uses Gemini if API key available, otherwise falls back to a simple local generator.
+ */
 export async function generateQuizFromText(text) {
-  const prompt = `
-You are a quiz generator.
-Given the following text, create 5 multiple-choice questions.
-Return only valid JSON in the following format:
+  if (!text || text.trim().length === 0) return [];
 
-"id": "1",
-"question": "Question text",
-"options": ["A","B","C","D"],
-"answer": 0
+  if (apiKey) {
+    try {
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
-Text:
-${text}
-`;
+      const prompt = `
+      You are a quiz generator.
+      Given the following text, create 5 multiple-choice questions.
+      Return only a JSON array, where each object has:
+      - id (string)
+      - question (string)
+      - options (array of 4 strings)
+      - answer (index of correct option, 0-3)
 
-  // NOTE: this uses the Google Generative AI client. If you do not have GEMINI_API_KEY
-  // set in Vercel env vars, this will fail. This function calls the API and expects
-  // a plain JSON array in response. For offline testing or without key, it will throw.
-  const res = await genAI.generateText({ prompt });
+      Text:
+      ${text}
+      `;
 
-  // The client may return a structured object; try to parse
-  try {
-    const json = JSON.parse(res.text || res);
-    return json;
-  } catch (e) {
-    // If parsing fails, return a fallback empty array
-    console.warn("Failed to parse Gemini response:", e);
-    return [];
+      const result = await model.generateContent(prompt);
+      const responseText = result.response.text();
+      const parsed = JSON.parse(responseText);
+      if (Array.isArray(parsed)) return parsed;
+    } catch (err) {
+      console.warn("Gemini failed, using fallback:", err);
+    }
   }
+
+  // === Fallback generator (ensures app still works) ===
+  const sentences = text.split(/[.?!]\s+/).filter((s) => s.length > 20);
+  const questions = sentences.slice(0, 5).map((s, i) => ({
+    id: String(i + 1),
+    question: s.replace(/(\w{6,})/, "_____"),
+    options: ["Option A", "Option B", "Option C", "Option D"],
+    answer: 0,
+  }));
+  return questions;
 }
