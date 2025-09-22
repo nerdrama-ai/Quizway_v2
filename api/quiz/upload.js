@@ -36,40 +36,41 @@ export default async function handler(req, res) {
 
     const file = files.file || Object.values(files)[0];
     if (!file) {
+      console.error("❌ No file object received:", files);
       return res.status(400).json({ error: "No file uploaded" });
     }
 
     try {
       const filePath = file.filepath || file.path;
-      if (!filePath) {
-        console.error("❌ File path missing:", file);
-        return res.status(400).json({ error: "Invalid uploaded file path" });
+      console.log("📂 File received:", file);
+      console.log("📂 Using filePath:", filePath);
+
+      if (!filePath || !fs.existsSync(filePath)) {
+        return res.status(400).json({ error: "Uploaded file path invalid" });
       }
 
-      // Extract text from PDF
       const text = await extractPdfText(filePath);
-      console.log("✅ Extracted PDF text length:", text?.length || 0);
+      console.log("✅ Extracted text length:", text?.length || 0);
 
       if (!text || text.trim().length < 20) {
         return res.status(400).json({
-          error: "PDF too short or unreadable (might be scanned images)",
+          error: "PDF too short or unreadable (possibly scanned images)",
         });
       }
 
-      // Generate quiz
       const quiz = await generateQuizFromText(text);
+      console.log("✅ Quiz generated:", quiz?.length || 0, "questions");
+
       if (!quiz || quiz.length === 0) {
-        console.error("❌ Quiz generation returned empty result");
         return res.status(500).json({ error: "Quiz generation failed" });
       }
 
-      console.log("✅ Generated quiz with", quiz.length, "questions");
       return res.status(200).json({ questions: quiz });
     } catch (e) {
       console.error("❌ Upload handler error:", e);
       return res
         .status(500)
-        .json({ error: "Unexpected server error while processing PDF" });
+        .json({ error: e.message || "Unexpected server error" });
     }
   });
 }
