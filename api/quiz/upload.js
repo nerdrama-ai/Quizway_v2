@@ -1,10 +1,12 @@
+// api/quiz/upload.js
 import fs from "fs";
+import path from "path";
 import { extractPdfText } from "../services/pdfService.js";
 import { generateQuizFromText } from "../services/quizService.js";
 
 export const config = {
   api: {
-    bodyParser: false, // Important: disable default parser
+    bodyParser: false, // Important: disable Next's body parser
   },
 };
 
@@ -22,31 +24,32 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    // Save file to /tmp (Vercel allows this)
+    // Write the uploaded file to /tmp (works on Vercel)
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-    const tmpPath = `/tmp/${file.name}`;
-    await fs.promises.writeFile(tmpPath, buffer);
 
+    // sanitize filename a bit
+    const safeName = path.basename(file.name || `upload-${Date.now()}.pdf`);
+    const tmpPath = path.join("/tmp", `${Date.now()}-${safeName}`);
+
+    await fs.promises.writeFile(tmpPath, buffer);
     console.log("📂 Uploaded file path:", tmpPath);
 
-    // Extract text from PDF
+    // Extract text
     const text = await extractPdfText(tmpPath);
-    console.log("✅ Extracted text length:", text.length);
+    console.log("🔎 Extracted text length:", text?.length || 0);
 
     if (!text || text.trim().length < 20) {
       return res.status(400).json({
-        error: "PDF too short or unreadable (possibly scanned images)",
+        error:
+          "PDF too short or unreadable (possible scanned PDF). Try a text-based PDF or enable OCR.",
       });
     }
 
-    // Number of questions (optional field from form)
-    const numQuestions =
-      Number(formData.get("numQuestions")) || 5;
-
-    // Generate quiz
+    const numQuestions = Number(formData.get("numQuestions")) || 5;
     const quiz = await generateQuizFromText(text, { numQuestions });
-    console.log("✅ Quiz generated:", quiz.length);
+
+    console.log("✅ Quiz generated:", (quiz && quiz.length) || 0);
 
     if (!quiz || quiz.length === 0) {
       return res.status(500).json({ error: "Quiz generation failed" });
@@ -55,8 +58,6 @@ export default async function handler(req, res) {
     return res.status(200).json({ questions: quiz });
   } catch (err) {
     console.error("❌ Upload handler error:", err);
-    return res
-      .status(500)
-      .json({ error: err.message || "Unexpected server error" });
+    return res.status(500).json({ error: err.message || "Unexpected server error" });
   }
 }
