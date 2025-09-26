@@ -8,3 +8,16 @@ html,body,#root{height:100%}
 
 /* small helper */
 .card-fall { animation: fall 900ms ease-in forwards; }
+
+@keyframes progress {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+.animate-progress {
+  width: 50%;
+  animation: progress 1.2s linear infinite;
+}
