@@ -1,6 +1,7 @@
 // FILE: src/pages/Admin.jsx
 import React, { useState, useEffect } from "react"
 import { getTopics, saveTopics } from "../data/topics"
+import ProgressBar from "../components/ProgressBar"
 
 export default function Admin({ onHome }) {
   /** ---------- LOGIN STATE ---------- **/
@@ -325,9 +326,7 @@ export default function Admin({ onHome }) {
                     onChange={(e) => handleUploadPdf(e.target.files[0])}
                     className="block mb-2"
                   />
-                  {loadingQuiz && (
-                    <p className="text-sm text-indigo-600">Generating quiz...</p>
-                  )}
+                  {loadingQuiz && <ProgressBar label="Generating quiz..." />}
                 </div>
               </section>
 
