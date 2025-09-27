@@ -78,9 +78,9 @@ export default async function handler(req, res) {
       await fs.promises.writeFile(tmpPath, buf);
     } else {
       // Formidable branch
-      tmpPath = parsed.file.filepath; // ✅ only use filepath
+      tmpPath = parsed.file.filepath;
       if (!tmpPath) {
-        console.error(`[${requestId}] Formidable file missing filepath`);
+        console.error(`[${requestId}] ❌ Formidable file missing filepath`);
         return res.status(400).json({ error: "File upload failed" });
       }
       originalName =
@@ -88,7 +88,7 @@ export default async function handler(req, res) {
     }
 
     console.log(
-      `[${requestId}] File saved to ${tmpPath} (orig=${originalName})`
+      `[${requestId}] 📂 File saved to ${tmpPath} (orig=${originalName})`
     );
 
     // 3) Optional: save original to S3
@@ -96,29 +96,31 @@ export default async function handler(req, res) {
     try {
       s3Url = await uploadToS3IfConfigured(tmpPath, originalName, requestId);
     } catch (e) {
-      console.warn(`[${requestId}] S3 upload failed: ${e.message}`);
+      console.warn(`[${requestId}] ⚠️ S3 upload failed: ${e.message}`);
     }
 
     // 4) Extract text
+    console.log(`[${requestId}] 🔎 Calling extractPdfText with: ${tmpPath}`);
     let text = await extractPdfText(tmpPath);
+
     if (!text || text.trim().length < 50) {
-      console.log(`[${requestId}] Text too short, trying OCR`);
+      console.log(`[${requestId}] ⚠️ Text too short, trying OCR`);
       text = await performOCRIfNeeded(tmpPath, { requestId });
     }
     if (!text || text.trim().length < 30) {
-      console.error(`[${requestId}] Extraction failed`);
+      console.error(`[${requestId}] ❌ Extraction failed`);
       return res
         .status(400)
         .json({ error: "Failed to extract text from PDF" });
     }
 
-    console.log(`[${requestId}] Extracted text length: ${text.length}`);
+    console.log(`[${requestId}] ✅ Extracted text length: ${text.length}`);
 
     // 5) Generate quiz
     const numQuestions = Number(parsed.numQuestions || 5) || 5;
     const quiz = await generateQuizFromText(text, { numQuestions, requestId });
     if (!quiz?.length) {
-      console.error(`[${requestId}] Quiz generation failed`);
+      console.error(`[${requestId}] ❌ Quiz generation failed`);
       return res.status(500).json({ error: "Quiz generation failed" });
     }
 
@@ -132,10 +134,12 @@ export default async function handler(req, res) {
         { isBuffer: true }
       );
     } catch (e) {
-      console.warn(`[${requestId}] Quiz artifact save failed: ${e.message}`);
+      console.warn(`[${requestId}] ⚠️ Quiz artifact save failed: ${e.message}`);
     }
 
-    console.log(`[${requestId}] ✅ Quiz generated with ${quiz.length} questions`);
+    console.log(
+      `[${requestId}] ✅ Quiz generated with ${quiz.length} questions`
+    );
     return res
       .status(200)
       .json({ questions: quiz, requestId, originalFile: s3Url || null });
