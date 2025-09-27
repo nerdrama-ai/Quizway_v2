@@ -2,7 +2,7 @@
 import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
-import { extractPdfText } from "../services/pdfService.js"; // ✅ now calls Python
+import { extractPdfText } from "../services/pdfService.js"; // ✅ Python service
 import { performOCRIfNeeded } from "../services/ocrService.js";
 import { generateQuizFromText } from "../services/quizService.js";
 import { uploadToS3IfConfigured } from "../services/storageService.js";
@@ -10,6 +10,7 @@ import { uploadToS3IfConfigured } from "../services/storageService.js";
 export const config = { api: { bodyParser: false } };
 const TMP_DIR = "/tmp";
 
+/** Try native Node 18+ formData parser */
 async function parseNative(req) {
   if (typeof req.formData === "function") {
     const fd = await req.formData();
@@ -20,6 +21,7 @@ async function parseNative(req) {
   return null;
 }
 
+/** Fallback: formidable parser */
 async function parseFormidable(req) {
   const { default: formidable } = await import("formidable");
   return new Promise((resolve, reject) => {
@@ -27,7 +29,7 @@ async function parseFormidable(req) {
       multiples: false,
       uploadDir: TMP_DIR,
       keepExtensions: true,
-      maxFileSize: 50 * 1024 * 1024,
+      maxFileSize: 50 * 1024 * 1024, // 50MB
     });
     form.parse(req, (err, fields, files) => {
       if (err) return reject(err);
@@ -44,7 +46,7 @@ export default async function handler(req, res) {
   console.log(`[${requestId}] 👉 Upload handler start`);
 
   try {
-    // 1) Parse multipart request
+    // 1) Parse request
     let parsed = null;
     try {
       parsed = await parseNative(req);
@@ -72,8 +74,12 @@ export default async function handler(req, res) {
       tmpPath = path.join(TMP_DIR, `${Date.now()}-${originalName}`);
       await fs.promises.writeFile(tmpPath, buf);
     } else {
-      // Formidable branch
-      tmpPath = parsed.file.filepath;
+      // Formidable branch (handle multiple possible fields)
+      tmpPath =
+        parsed.file.filepath ||
+        parsed.file.path ||
+        parsed.file.tempFilePath ||
+        null;
       if (!tmpPath) {
         console.error(`[${requestId}] ❌ Formidable file missing filepath`);
         return res.status(400).json({ error: "File upload failed" });
@@ -83,7 +89,7 @@ export default async function handler(req, res) {
 
     console.log(`[${requestId}] 📂 File saved to ${tmpPath} (orig=${originalName})`);
 
-    // 3) Optional: upload original to S3
+    // 3) Upload original to S3 (optional)
     let s3Url = null;
     try {
       s3Url = await uploadToS3IfConfigured(tmpPath, originalName, requestId);
@@ -91,11 +97,11 @@ export default async function handler(req, res) {
       console.warn(`[${requestId}] ⚠️ S3 upload failed: ${e.message}`);
     }
 
-    // 4) Extract text (via Python service)
+    // 4) Extract text via Python service
     console.log(`[${requestId}] 🔎 Calling extractPdfText with: ${tmpPath}`);
     let text = await extractPdfText(tmpPath);
 
-    // 5) OCR fallback if too short
+    // 5) OCR fallback if text too short
     if (!text || text.trim().length < 50) {
       console.log(`[${requestId}] ⚠️ Text too short, trying OCR`);
       text = await performOCRIfNeeded(tmpPath, { requestId });
@@ -115,7 +121,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Quiz generation failed" });
     }
 
-    // 7) Save quiz artifact
+    // 7) Save quiz artifact (S3 optional)
     try {
       const artifact = `quiz-${requestId}.json`;
       await uploadToS3IfConfigured(
@@ -131,7 +137,7 @@ export default async function handler(req, res) {
     console.log(`[${requestId}] ✅ Quiz generated with ${quiz.length} questions`);
     return res.status(200).json({ questions: quiz, requestId, originalFile: s3Url || null });
   } catch (err) {
-    console.error(`[${requestId}] ❌ Handler error:`, err.message || err);
+    console.error(`[${requestId}] ❌ Handler error:`, err.message);
     return res.status(500).json({ error: err.message || "Server error" });
   } finally {
     console.log(`[${requestId}] ⛔ Handler complete`);
