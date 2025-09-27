@@ -2,9 +2,6 @@
 import fs from "fs";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.js";
 
-// Optional: configure worker if needed
-pdfjsLib.GlobalWorkerOptions.workerSrc = require("pdfjs-dist/legacy/build/pdf.worker.js");
-
 function cleanText(text) {
   if (!text) return "";
   return text
