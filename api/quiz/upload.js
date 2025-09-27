@@ -1,16 +1,13 @@
-// /Quizway_v2-main/api/quiz/upload.js
+// /api/quiz/upload.js
 import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
-import { extractPdfText } from "../services/pdfService.js";
+import { extractPdfText } from "../services/pdfService.js"; // ✅ now calls Python
 import { performOCRIfNeeded } from "../services/ocrService.js";
 import { generateQuizFromText } from "../services/quizService.js";
 import { uploadToS3IfConfigured } from "../services/storageService.js";
 
-export const config = {
-  api: { bodyParser: false },
-};
-
+export const config = { api: { bodyParser: false } };
 const TMP_DIR = "/tmp";
 
 async function parseNative(req) {
@@ -41,25 +38,23 @@ async function parseFormidable(req) {
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   const requestId = randomUUID();
   console.log(`[${requestId}] 👉 Upload handler start`);
 
   try {
-    // 1) Parse request
+    // 1) Parse multipart request
     let parsed = null;
     try {
       parsed = await parseNative(req);
     } catch (e) {
-      console.warn(`[${requestId}] Native parser failed: ${e.message}`);
+      console.warn(`[${requestId}] ⚠️ Native parser failed: ${e.message}`);
     }
     if (!parsed) parsed = await parseFormidable(req);
 
     if (!parsed?.file) {
-      console.error(`[${requestId}] No file found`);
+      console.error(`[${requestId}] ❌ No file found`);
       return res.status(400).json({ error: "No file uploaded" });
     }
 
@@ -72,7 +67,7 @@ export default async function handler(req, res) {
       `upload-${Date.now()}.pdf`;
 
     if (parsed.file.arrayBuffer) {
-      // Native branch
+      // Native formData branch
       const buf = Buffer.from(await parsed.file.arrayBuffer());
       tmpPath = path.join(TMP_DIR, `${Date.now()}-${originalName}`);
       await fs.promises.writeFile(tmpPath, buf);
@@ -83,15 +78,12 @@ export default async function handler(req, res) {
         console.error(`[${requestId}] ❌ Formidable file missing filepath`);
         return res.status(400).json({ error: "File upload failed" });
       }
-      originalName =
-        parsed.file.originalFilename || parsed.file.name || originalName;
+      originalName = parsed.file.originalFilename || parsed.file.name || originalName;
     }
 
-    console.log(
-      `[${requestId}] 📂 File saved to ${tmpPath} (orig=${originalName})`
-    );
+    console.log(`[${requestId}] 📂 File saved to ${tmpPath} (orig=${originalName})`);
 
-    // 3) Optional: save original to S3
+    // 3) Optional: upload original to S3
     let s3Url = null;
     try {
       s3Url = await uploadToS3IfConfigured(tmpPath, originalName, requestId);
@@ -99,24 +91,23 @@ export default async function handler(req, res) {
       console.warn(`[${requestId}] ⚠️ S3 upload failed: ${e.message}`);
     }
 
-    // 4) Extract text
+    // 4) Extract text (via Python service)
     console.log(`[${requestId}] 🔎 Calling extractPdfText with: ${tmpPath}`);
     let text = await extractPdfText(tmpPath);
 
+    // 5) OCR fallback if too short
     if (!text || text.trim().length < 50) {
       console.log(`[${requestId}] ⚠️ Text too short, trying OCR`);
       text = await performOCRIfNeeded(tmpPath, { requestId });
     }
     if (!text || text.trim().length < 30) {
       console.error(`[${requestId}] ❌ Extraction failed`);
-      return res
-        .status(400)
-        .json({ error: "Failed to extract text from PDF" });
+      return res.status(400).json({ error: "Failed to extract text from PDF" });
     }
 
     console.log(`[${requestId}] ✅ Extracted text length: ${text.length}`);
 
-    // 5) Generate quiz
+    // 6) Generate quiz
     const numQuestions = Number(parsed.numQuestions || 5) || 5;
     const quiz = await generateQuizFromText(text, { numQuestions, requestId });
     if (!quiz?.length) {
@@ -124,7 +115,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Quiz generation failed" });
     }
 
-    // 6) Save quiz artifact
+    // 7) Save quiz artifact
     try {
       const artifact = `quiz-${requestId}.json`;
       await uploadToS3IfConfigured(
@@ -137,12 +128,8 @@ export default async function handler(req, res) {
       console.warn(`[${requestId}] ⚠️ Quiz artifact save failed: ${e.message}`);
     }
 
-    console.log(
-      `[${requestId}] ✅ Quiz generated with ${quiz.length} questions`
-    );
-    return res
-      .status(200)
-      .json({ questions: quiz, requestId, originalFile: s3Url || null });
+    console.log(`[${requestId}] ✅ Quiz generated with ${quiz.length} questions`);
+    return res.status(200).json({ questions: quiz, requestId, originalFile: s3Url || null });
   } catch (err) {
     console.error(`[${requestId}] ❌ Handler error:`, err.message || err);
     return res.status(500).json({ error: err.message || "Server error" });
