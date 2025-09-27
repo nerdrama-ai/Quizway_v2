@@ -57,6 +57,7 @@ export default function Admin({ onHome }) {
   const [search, setSearch] = useState("")
   const [toasts, setToasts] = useState([])
   const [loadingQuiz, setLoadingQuiz] = useState(false)
+  const [showUpload, setShowUpload] = useState(false) // NEW state
 
   const addToast = (message, type = "info") => {
     const id = Date.now().toString()
@@ -72,6 +73,10 @@ export default function Admin({ onHome }) {
   }
 
   const handleAddTopic = () => {
+    setShowUpload(true) // instead of instantly creating, show upload
+  }
+
+  const createEmptyTopic = () => {
     const newTopic = {
       id: Date.now().toString(),
       title: "Untitled Topic",
@@ -82,7 +87,7 @@ export default function Admin({ onHome }) {
     }
     saveAndSetTopics([...topics, newTopic])
     setActiveTopicId(newTopic.id)
-    addToast("Topic added", "success")
+    addToast("Empty topic added", "success")
   }
 
   const handleDeleteTopic = (id) => {
@@ -125,15 +130,14 @@ export default function Admin({ onHome }) {
     saveAndSetTopics(updated)
   }
 
-  /** ---------- FIXED: Generate Quiz From PDF ---------- **/
+  /** ---------- Generate Quiz From PDF ---------- **/
   const handleUploadPdf = async (file) => {
-    if (!file || !activeTopic) return
+    if (!file) return
     setLoadingQuiz(true)
     try {
       const formData = new FormData()
       formData.append("file", file)
 
-      // ✅ Correct backend endpoint
       const res = await fetch("/api/quiz/upload", {
         method: "POST",
         body: formData,
@@ -144,23 +148,26 @@ export default function Admin({ onHome }) {
       const data = await res.json()
       if (!data.questions) throw new Error("No questions returned")
 
-      // ✅ Normalize questions: ensure "correct" key exists
-      const normalized = data.questions.map((q, i) => ({
-        id: q.id || String(i + 1),
-        question: q.question,
-        options: q.options,
-        correct: q.answer ?? q.correct ?? 0,
-        hint: q.hint || "",
-        explanation: q.explanation || "",
-      }))
+      const newTopic = {
+        id: Date.now().toString(),
+        title: data.title || "New PDF Topic",
+        description: data.description || "",
+        timer: 0,
+        keywords: [],
+        questions: data.questions.map((q, i) => ({
+          id: q.id || String(i + 1),
+          question: q.question,
+          options: q.options,
+          correct: q.answer ?? q.correct ?? 0,
+          hint: q.hint || "",
+          explanation: q.explanation || "",
+        })),
+      }
 
-      const updated = topics.map((t) =>
-        t.id === activeTopic.id
-          ? { ...t, questions: [...t.questions, ...normalized] }
-          : t
-      )
-      saveAndSetTopics(updated)
-      addToast("Quiz generated from PDF", "success")
+      saveAndSetTopics([...topics, newTopic])
+      setActiveTopicId(newTopic.id)
+      addToast("Topic created from PDF", "success")
+      setShowUpload(false)
     } catch (err) {
       console.error(err)
       addToast("Error generating quiz: " + err.message, "warning")
@@ -208,10 +215,7 @@ export default function Admin({ onHome }) {
     <div className="min-h-screen p-6 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100">
       <header className="flex justify-between mb-6">
         <h2 className="text-2xl font-bold">Admin Panel</h2>
-        <div className="flex gap-2">
-          <button onClick={onHome} className="px-3 py-1 bg-slate-200 dark:bg-slate-700 rounded">
-            Home
-          </button>
+        <div>
           <button
             onClick={handleLogout}
             className="px-3 py-1 bg-red-500 text-white rounded"
@@ -239,6 +243,25 @@ export default function Admin({ onHome }) {
               +
             </button>
           </div>
+
+          {showUpload && (
+            <div className="p-3 border rounded bg-white dark:bg-slate-800 mb-3">
+              <p className="mb-2 font-semibold">Create Topic</p>
+              <input
+                type="file"
+                accept="application/pdf"
+                onChange={(e) => handleUploadPdf(e.target.files[0])}
+                className="mb-2"
+              />
+              {loadingQuiz && <ProgressBar label="Processing PDF..." />}
+              <button
+                onClick={createEmptyTopic}
+                className="text-sm px-2 py-1 bg-slate-200 dark:bg-slate-700 rounded"
+              >
+                Or create empty topic
+              </button>
+            </div>
+          )}
 
           <div className="space-y-2 max-h-[65vh] overflow-y-auto">
             {topics
@@ -316,18 +339,6 @@ export default function Admin({ onHome }) {
                   }
                   placeholder="Keywords (comma separated)"
                 />
-
-                {/* PDF Upload */}
-                <div className="mt-4">
-                  <h4 className="font-semibold mb-2">Generate Quiz from PDF</h4>
-                  <input
-                    type="file"
-                    accept="application/pdf"
-                    onChange={(e) => handleUploadPdf(e.target.files[0])}
-                    className="block mb-2"
-                  />
-                  {loadingQuiz && <ProgressBar label="Generating quiz..." />}
-                </div>
               </section>
 
               {/* Questions */}
