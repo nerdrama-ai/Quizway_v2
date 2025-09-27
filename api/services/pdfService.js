@@ -1,48 +1,36 @@
 // /api/services/pdfService.js
 import fs from "fs";
-import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.js";
+import fetch from "node-fetch";
+import FormData from "form-data";
 
-function cleanText(text) {
-  if (!text) return "";
-  return text
-    .replace(/Page\s*\d+/gi, "")
-    .replace(/\s{2,}/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
+const PYTHON_SERVICE_URL = process.env.PYTHON_SERVICE_URL || "http://localhost:8000";
 
 export async function extractPdfText(filePath) {
   try {
-    console.log("📂 extractPdfText called with:", filePath);
-
-    if (!filePath) throw new Error("❌ No filePath provided");
-    if (!fs.existsSync(filePath)) throw new Error(`❌ File not found: ${filePath}`);
-
-    const data = new Uint8Array(fs.readFileSync(filePath));
-    const pdf = await pdfjsLib.getDocument({ data }).promise;
-
-    let textContent = "";
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const content = await page.getTextContent();
-      const strings = content.items.map((item) => item.str);
-      textContent += strings.join(" ") + "\n";
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`File not found: ${filePath}`);
     }
 
-    const text = cleanText(textContent);
-    console.log("✅ Extracted text length:", text.length);
+    const formData = new FormData();
+    formData.append("file", fs.createReadStream(filePath), "upload.pdf");
 
-    // cleanup temp file
-    try {
-      fs.unlinkSync(filePath);
-      console.log("🗑️ Deleted temp file:", filePath);
-    } catch (e) {
-      console.warn("⚠️ Failed to delete temp file:", e.message);
-    }
+    const res = await fetch(`${PYTHON_SERVICE_URL}/extract-text`, {
+      method: "POST",
+      body: formData,
+    });
 
-    return text;
+    if (!res.ok) throw new Error(`Python service error: ${res.status}`);
+    const data = await res.json();
+
+    if (!data.success) throw new Error(`Python error: ${data.error}`);
+
+    return data.text || "";
   } catch (err) {
-    console.error("❌ extractPdfText error:", err.message || err);
+    console.error("❌ extractPdfText error:", err.message);
     return "";
+  } finally {
+    try {
+      fs.unlinkSync(filePath); // cleanup
+    } catch {}
   }
 }
