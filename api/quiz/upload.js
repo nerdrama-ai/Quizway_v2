@@ -45,8 +45,21 @@ async function parseFormidable(req) {
 
     form.parse(req, (err, fields, files) => {
       if (err) return reject(err);
-      const file = files.file || files.pdf || Object.values(files)[0];
-      resolve({ file, numQuestions: fields.numQuestions || fields.count || 5 });
+
+      // ✅ unwrap arrays from formidable v3
+      let file =
+        files.file ||
+        files.pdf ||
+        Object.values(files)[0];
+
+      if (Array.isArray(file)) {
+        file = file[0];
+      }
+
+      resolve({
+        file,
+        numQuestions: fields.numQuestions || fields.count || 5,
+      });
     });
   });
 }
@@ -101,7 +114,9 @@ export default async function handler(req, res) {
         parsed.file.originalFilename || parsed.file.name || originalName;
     }
 
-    console.log(`[${requestId}] 📂 File saved to ${tmpPath} (orig=${originalName})`);
+    console.log(
+      `[${requestId}] 📂 File saved to ${tmpPath} (orig=${originalName})`
+    );
 
     // 3) Upload original to S3 (optional)
     let s3Url = null;
@@ -133,7 +148,11 @@ export default async function handler(req, res) {
     const numQuestions = Number(parsed.numQuestions || 5);
     const quiz = await generateQuizFromText(text, numQuestions);
 
-    console.log(`[${requestId}] ✅ Quiz generated with ${quiz?.questions?.length || 0} questions`);
+    console.log(
+      `[${requestId}] ✅ Quiz generated with ${
+        quiz?.questions?.length || 0
+      } questions`
+    );
 
     res.json({ quiz, s3Url });
   } catch (err) {
