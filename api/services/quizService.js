@@ -184,16 +184,44 @@ ${subText.slice(0, 5000)}
         let parsed = [];
 
         try {
-          parsed = JSON.parse(jsonString);
-        } catch (err) {
-          console.warn(`⚠️ JSON parse failed for ${topicTitle} → ${subTitle}:`, err.message);
-          try {
-            parsed = JSON.parse(repairJsonString(jsonString));
-          } catch {
-            parsed = [];
-          }
-        }
+  parsed = JSON.parse(jsonString);
+} catch (err) {
+  console.warn(`⚠️ JSON parse failed for ${topicTitle} → ${subTitle}:`, err.message);
 
+  // Attempt repair with regex cleaner first
+  try {
+    parsed = JSON.parse(repairJsonString(jsonString));
+  } catch (repairErr) {
+    console.warn(`⚠️ Repair attempt failed for ${topicTitle} → ${subTitle}:`, repairErr.message);
+
+    // 🧠 New fallback: ask AI to fix its own malformed JSON
+    try {
+      const repairPrompt = `
+The following JSON for quiz questions is malformed. Please fix the syntax
+and return ONLY a valid JSON array (no markdown, no explanations).
+
+Broken JSON:
+${jsonString.slice(0, 6000)}
+`;
+      const fixResponse = await openai.chat.completions.create({
+        model: MODEL,
+        messages: [
+          { role: "system", content: "You are a JSON repair assistant." },
+          { role: "user", content: repairPrompt },
+        ],
+        temperature: 0,
+        max_tokens: 1500,
+      });
+      const fixedRaw = fixResponse.choices?.[0]?.message?.content || "";
+      const fixedJson = findJsonCodeBlock(fixedRaw) || findBalanced(fixedRaw) || repairJsonString(fixedRaw);
+      parsed = JSON.parse(fixedJson);
+      console.log(`🔧 Successfully repaired malformed JSON for ${topicTitle} → ${subTitle}`);
+    } catch (fixErr) {
+      console.warn(`🚨 JSON repair also failed for ${topicTitle} → ${subTitle}:`, fixErr.message);
+      parsed = [];
+    }
+  }
+}
         if (validateQuestionsArray(parsed)) {
           parsed.forEach((q, idx) => {
             q.id = `${t + 1}-${s + 1}-${idx + 1}`;
