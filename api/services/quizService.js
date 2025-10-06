@@ -52,6 +52,7 @@ function repairJsonString(str) {
   return s;
 }
 
+// ✅ Validation updated to check `correct` instead of `answer`
 function validateQuestionsArray(arr) {
   if (!Array.isArray(arr)) return false;
   for (const q of arr) {
@@ -63,9 +64,9 @@ function validateQuestionsArray(arr) {
       q.options.length !== 4 ||
       typeof q.hint !== "string" ||
       typeof q.explanation !== "string" ||
-      typeof q.answer !== "number" ||
-      q.answer < 1 ||
-      q.answer > 4
+      typeof q.correct !== "number" ||
+      q.correct < 1 ||
+      q.correct > 4
     ) {
       return false;
     }
@@ -85,19 +86,19 @@ function localGenerator(text, numQuestions = 5) {
   for (let i = 0; i < Math.min(numQuestions, sentences.length); i++) {
     const s = sentences[i];
     const words = s.split(/\s+/).filter((w) => /[A-Za-z]/.test(w));
-    const answerWord = words.sort((a, b) => b.length - a.length)[0] || "Answer";
-    const correct = answerWord.replace(/[^A-Za-z0-9-]/g, "");
-    const questionText = s.replace(answerWord, "_____");
+    const correctWord = words.sort((a, b) => b.length - a.length)[0] || "Answer";
+    const correct = correctWord.replace(/[^A-Za-z0-9-]/g, "");
+    const questionText = s.replace(correctWord, "_____");
     const opts = new Set([correct]);
     while (opts.size < 4) opts.add(Math.random().toString(36).substring(2, 8));
     const options = Array.from(opts);
-    const answerIndex = options.indexOf(correct);
+    const correctIndex = options.indexOf(correct);
     questions.push({
       id: String(i + 1),
       question: questionText,
       options,
       hint: "Focus on the missing keyword in the sentence.",
-      answer: (answerIndex >= 0 ? answerIndex : 0) + 1,
+      correct: (correctIndex >= 0 ? correctIndex : 0) + 1,
       explanation: `The missing word '${correct}' fits best in the context.`,
     });
   }
@@ -116,10 +117,10 @@ Each question must have:
 - "question": the question text
 - "options": exactly 4 unique answer choices
 - "hint": a short helpful hint
-- "answer": the correct option number (1–4)
-- "explanation": a brief explanation of why that answer is correct.
+- "correct": the correct option number (1–4)
+- "explanation": a brief explanation of why that option is correct
 
-Return ONLY valid JSON (no markdown or extra commentary).
+Return ONLY valid JSON (no markdown, no commentary).
 Example:
 [
   {
@@ -132,7 +133,7 @@ Example:
       "Sorting data"
     ],
     "hint": "Think about the type of variable predicted.",
-    "answer": 1,
+    "correct": 1,
     "explanation": "Linear regression predicts continuous outcomes using a linear relationship."
   }
 ]
@@ -174,7 +175,7 @@ ${text.slice(0, 4000)}
       console.log(`✅ Quiz generated with ${parsed.length} questions`);
       return { questions: parsed, reason: "AI generated" };
     } else {
-      console.warn("⚠️ Invalid AI JSON, using local fallback");
+      console.warn("⚠️ Invalid AI quiz JSON, using local fallback");
       return { questions: localGenerator(text, numQuestions), reason: "Invalid AI JSON" };
     }
   } catch (err) {
