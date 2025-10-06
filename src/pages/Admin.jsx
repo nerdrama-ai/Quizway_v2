@@ -2,8 +2,6 @@
 import React, { useState, useEffect } from "react"
 import { getTopics, saveTopics } from "../data/topics"
 import ProgressBar from "../components/ProgressBar"
-import jsPDF from "jspdf"
-import "jspdf-autotable"
 
 export default function Admin({ onHome }) {
   /** ---------- LOGIN STATE ---------- **/
@@ -59,7 +57,7 @@ export default function Admin({ onHome }) {
   const [search, setSearch] = useState("")
   const [toasts, setToasts] = useState([])
   const [loadingQuiz, setLoadingQuiz] = useState(false)
-  const [showUpload, setShowUpload] = useState(false)
+  const [showUpload, setShowUpload] = useState(false) // NEW state
 
   const addToast = (message, type = "info") => {
     const id = Date.now().toString()
@@ -75,7 +73,7 @@ export default function Admin({ onHome }) {
   }
 
   const handleAddTopic = () => {
-    setShowUpload(true)
+    setShowUpload(true) // instead of instantly creating, show upload
   }
 
   const createEmptyTopic = () => {
@@ -176,71 +174,6 @@ export default function Admin({ onHome }) {
     } finally {
       setLoadingQuiz(false)
     }
-  }
-
-  /** ---------- Download Quiz As PDF ---------- **/
-  const handleDownloadPdf = (topic) => {
-    if (!topic) return
-
-    const doc = new jsPDF()
-    const marginLeft = 14
-    let y = 20
-
-    doc.setFont("helvetica", "bold")
-    doc.setFontSize(18)
-    doc.text(topic.title || "Untitled Quiz", marginLeft, y)
-    y += 8
-
-    doc.setFontSize(12)
-    doc.setFont("helvetica", "normal")
-    if (topic.description) {
-      const descriptionLines = doc.splitTextToSize(topic.description, 180)
-      doc.text(descriptionLines, marginLeft, y)
-      y += descriptionLines.length * 6 + 5
-    }
-
-    if (topic.questions.length === 0) {
-      doc.text("No questions available.", marginLeft, y)
-    } else {
-      topic.questions.forEach((q, index) => {
-        y += 8
-        if (y > 270) {
-          doc.addPage()
-          y = 20
-        }
-
-        doc.setFont("helvetica", "bold")
-        doc.text(`Q${index + 1}: ${q.question}`, marginLeft, y)
-        y += 6
-
-        doc.setFont("helvetica", "normal")
-        q.options.forEach((opt, i) => {
-          const prefix = i === q.correct ? "✓" : "•"
-          const optText = `${prefix} ${opt}`
-          const wrapped = doc.splitTextToSize(optText, 170)
-          doc.text(wrapped, marginLeft + 6, y)
-          y += wrapped.length * 5
-        })
-
-        if (q.hint) {
-          y += 3
-          doc.setFontSize(10)
-          doc.text(`Hint: ${q.hint}`, marginLeft + 4, y)
-          y += 5
-        }
-
-        if (q.explanation) {
-          doc.setFontSize(10)
-          const explLines = doc.splitTextToSize(`Explanation: ${q.explanation}`, 170)
-          doc.text(explLines, marginLeft + 4, y)
-          y += explLines.length * 5
-        }
-
-        doc.setFontSize(12)
-      })
-    }
-
-    doc.save(`${topic.title || "quiz"}.pdf`)
   }
 
   /** ---------- LOGIN SCREEN ---------- **/
@@ -374,9 +307,7 @@ export default function Admin({ onHome }) {
                 <input
                   className="border p-2 w-full mb-2 rounded bg-white dark:bg-slate-700 dark:text-slate-100"
                   value={activeTopic.title}
-                  onChange={(e) =>
-                    handleUpdateTopic(activeTopic.id, "title", e.target.value)
-                  }
+                  onChange={(e) => handleUpdateTopic(activeTopic.id, "title", e.target.value)}
                   placeholder="Title"
                 />
                 <textarea
@@ -408,14 +339,6 @@ export default function Admin({ onHome }) {
                   }
                   placeholder="Keywords (comma separated)"
                 />
-
-                {/* Download button */}
-                <button
-                  onClick={() => handleDownloadPdf(activeTopic)}
-                  className="mt-2 bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700"
-                >
-                  📄 Download Quiz as PDF
-                </button>
               </section>
 
               {/* Questions */}
