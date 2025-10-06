@@ -4,7 +4,7 @@ import OpenAI from "openai";
 // --- OpenRouter Configuration ---
 const OPENROUTER_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
-const MODEL = process.env.OPENAI_MODEL || "gpt-3.5-turbo";
+const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
 if (!OPENROUTER_API_KEY) {
   console.error("❌ Missing OpenRouter API key! Please add OPENAI_API_KEY in Vercel.");
@@ -52,7 +52,6 @@ function repairJsonString(str) {
   return s;
 }
 
-// ✅ Validation updated to check `correct` instead of `answer`
 function validateQuestionsArray(arr) {
   if (!Array.isArray(arr)) return false;
   for (const q of arr) {
@@ -105,14 +104,57 @@ function localGenerator(text, numQuestions = 5) {
   return questions;
 }
 
-// --- Main Quiz Generator using OpenRouter ---
+// --- Helpers for topic/subtopic segmentation ---
+function splitIntoTopics(text) {
+  const lessons = text.split(/(?=LESSON\s*[-–]?\s*\d+)/gi).map(t => t.trim()).filter(Boolean);
+
+  if (lessons.length <= 1) {
+    const chunks = [];
+    for (let i = 0; i < text.length; i += 2500) {
+      chunks.push(text.slice(i, i + 2500));
+    }
+    return chunks;
+  }
+  return lessons;
+}
+
+function splitIntoSubtopics(topicText) {
+  const parts = topicText.split(
+    /(?=Activity|Know\s*this|Do\s*it\s*yourself|Sing\s*and\s*Enjoy|Play\s*the\s*game|Discuss\s*with|Observe)/gi
+  ).map(p => p.trim()).filter(Boolean);
+  return parts.length > 0 ? parts : [topicText];
+}
+
+function estimateNumQuestions(blockText) {
+  const words = blockText.split(/\s+/).length;
+  return Math.max(3, Math.min(10, Math.round(words / 150)));
+}
+
+// --- Main Quiz Generator ---
 export async function generateQuizFromText(text, numQuestions = 5) {
   if (!text || text.trim().length < 100) {
     return { questions: [], reason: "Text too short" };
   }
 
-  const prompt = `
-Generate exactly ${numQuestions} multiple-choice quiz questions from the following text.
+  const topics = splitIntoTopics(text);
+  console.log(`🧩 Found ${topics.length} major topics`);
+
+  const allQuestions = [];
+
+  for (let t = 0; t < topics.length; t++) {
+    const topic = topics[t];
+    const topicTitle = topic.match(/LESSON\s*[-–]?\s*\d+[^\\n]*/i)?.[0] || `Topic ${t + 1}`;
+    const subTopics = splitIntoSubtopics(topic);
+    console.log(`📘 ${topicTitle} → ${subTopics.length} subtopics`);
+
+    for (let s = 0; s < subTopics.length; s++) {
+      const subText = subTopics[s];
+      const subTitleMatch = subText.match(/^(Activity|Know\s*this|Do\s*it\s*yourself|Sing\s*and\s*Enjoy|Play\s*the\s*game|Observe)/i);
+      const subTitle = subTitleMatch ? subTitleMatch[0] : `Section ${s + 1}`;
+      const dynamicCount = estimateNumQuestions(subText);
+
+      const prompt = `
+Generate around ${dynamicCount} multiple-choice questions that cover all key ideas in the section below.
 Each question must have:
 - "question": the question text
 - "options": exactly 4 unique answer choices
@@ -121,65 +163,68 @@ Each question must have:
 - "explanation": a brief explanation of why that option is correct
 
 Return ONLY valid JSON (no markdown, no commentary).
-Example:
-[
-  {
-    "id": "1",
-    "question": "What is linear regression used for?",
-    "options": [
-      "Predicting continuous outcomes",
-      "Predicting categorical outcomes",
-      "Data encryption",
-      "Sorting data"
-    ],
-    "hint": "Think about the type of variable predicted.",
-    "correct": 1,
-    "explanation": "Linear regression predicts continuous outcomes using a linear relationship."
-  }
-]
 
-Text:
-${text.slice(0, 4000)}
+Section (${topicTitle} → ${subTitle}):
+${subText.slice(0, 5000)}
 `;
 
-  try {
-    const response = await openai.chat.completions.create({
-      model: MODEL,
-      messages: [
-        {
-          role: "system",
-          content: "You are a precise quiz generator that outputs strict JSON arrays only.",
-        },
-        { role: "user", content: prompt },
-      ],
-      temperature: 0.7,
-      max_tokens: 1200,
-    });
-
-    const raw = response.choices?.[0]?.message?.content || "";
-    let jsonString = findJsonCodeBlock(raw) || findBalanced(raw) || repairJsonString(raw);
-    let parsed = [];
-
-    try {
-      parsed = JSON.parse(jsonString);
-    } catch (err) {
-      console.warn("⚠️ JSON parse failed:", err.message);
       try {
-        parsed = JSON.parse(repairJsonString(jsonString));
-      } catch {
-        parsed = [];
+        const response = await openai.chat.completions.create({
+          model: MODEL,
+          messages: [
+            { role: "system", content: "You are a precise quiz generator that outputs strict JSON arrays only." },
+            { role: "user", content: prompt },
+          ],
+          temperature: 0.6,
+          max_tokens: 1500,
+        });
+
+        const raw = response.choices?.[0]?.message?.content || "";
+        let jsonString = findJsonCodeBlock(raw) || findBalanced(raw) || repairJsonString(raw);
+        let parsed = [];
+
+        try {
+          parsed = JSON.parse(jsonString);
+        } catch (err) {
+          console.warn(`⚠️ JSON parse failed for ${topicTitle} → ${subTitle}:`, err.message);
+          try {
+            parsed = JSON.parse(repairJsonString(jsonString));
+          } catch {
+            parsed = [];
+          }
+        }
+
+        if (validateQuestionsArray(parsed)) {
+          parsed.forEach((q, idx) => {
+            q.id = `${t + 1}-${s + 1}-${idx + 1}`;
+            q.topic = topicTitle;
+            q.subTopic = subTitle;
+          });
+          allQuestions.push(...parsed);
+          console.log(`✅ ${parsed.length} questions generated for ${topicTitle} → ${subTitle}`);
+        } else {
+          console.warn(`⚠️ Invalid AI quiz JSON, using local fallback for ${topicTitle} → ${subTitle}`);
+          const fallbackQs = localGenerator(subText, dynamicCount);
+          fallbackQs.forEach((q, idx) => {
+            q.id = `${t + 1}-${s + 1}-L${idx + 1}`;
+            q.topic = topicTitle;
+            q.subTopic = subTitle;
+          });
+          allQuestions.push(...fallbackQs);
+        }
+      } catch (err) {
+        console.error(`❌ OpenRouter error for ${topicTitle} → ${subTitle}:`, err.message);
+        const fallbackQs = localGenerator(subText, dynamicCount);
+        fallbackQs.forEach((q, idx) => {
+          q.id = `${t + 1}-${s + 1}-E${idx + 1}`;
+          q.topic = topicTitle;
+          q.subTopic = subTitle;
+        });
+        allQuestions.push(...fallbackQs);
       }
     }
-
-    if (validateQuestionsArray(parsed)) {
-      console.log(`✅ Quiz generated with ${parsed.length} questions`);
-      return { questions: parsed, reason: "AI generated" };
-    } else {
-      console.warn("⚠️ Invalid AI quiz JSON, using local fallback");
-      return { questions: localGenerator(text, numQuestions), reason: "Invalid AI JSON" };
-    }
-  } catch (err) {
-    console.error("❌ OpenRouter error:", err.message);
-    return { questions: localGenerator(text, numQuestions), reason: "OpenRouter error" };
   }
+
+  console.log(`✅ Total quiz questions generated: ${allQuestions.length}`);
+  return { questions: allQuestions, reason: "Topic & Subtopic coverage" };
 }
