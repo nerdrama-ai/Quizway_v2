@@ -52,7 +52,6 @@ function repairJsonString(str) {
   return s;
 }
 
-// ✅ Validation updated to check `correct` instead of `answer`
 function validateQuestionsArray(arr) {
   if (!Array.isArray(arr)) return false;
   for (const q of arr) {
@@ -74,7 +73,7 @@ function validateQuestionsArray(arr) {
   return true;
 }
 
-// --- Local fallback ---
+// --- Local fallback generator (never fails) ---
 function localGenerator(text, numQuestions = 5) {
   const sentences = text
     .replace(/\s+/g, " ")
@@ -105,23 +104,43 @@ function localGenerator(text, numQuestions = 5) {
   return questions;
 }
 
-// --- Main Quiz Generator using OpenRouter ---
+// --- Helper to parse and validate AI output ---
+function tryParseAIResponse(raw) {
+  let jsonString = findJsonCodeBlock(raw) || findBalanced(raw) || repairJsonString(raw);
+  let parsed = [];
+  try {
+    parsed = JSON.parse(jsonString);
+  } catch {
+    try {
+      parsed = JSON.parse(repairJsonString(jsonString));
+    } catch {
+      parsed = [];
+    }
+  }
+  return parsed;
+}
+
+// --- Main Quiz Generator with Retry ---
 export async function generateQuizFromText(text, numQuestions = 5) {
   if (!text || text.trim().length < 100) {
     return { questions: [], reason: "Text too short" };
   }
 
-  const prompt = `
-Generate exactly ${numQuestions} multiple-choice quiz questions from the following text.
-Each question must have:
-- "question": the question text
-- "options": exactly 4 unique answer choices
-- "hint": a short helpful hint
-- "correct": the correct option number (1–4)
-- "explanation": a brief explanation of why that option is correct
+  const basePrompt = `
+You are an advanced quiz generation system.
+Generate exactly ${numQuestions} multiple-choice questions from the provided text.
+Each question must test understanding, not memorization.
 
-Return ONLY valid JSON (no markdown, no commentary).
-Example:
+Return ONLY valid JSON (no markdown, no commentary). 
+Each item must include:
+- "id"
+- "question"
+- "options": exactly 4 choices
+- "hint": short clue
+- "correct": the correct option number (1–4)
+- "explanation": short explanation of why the correct option is right.
+
+Example JSON:
 [
   {
     "id": "1",
@@ -142,42 +161,54 @@ Text:
 ${text.slice(0, 4000)}
 `;
 
-  try {
+  const strictPrompt = `
+You must return STRICT JSON output only.
+If the text includes multiple topics, ensure each topic is represented with at least one question.
+Each item must include: question, options (4), hint, correct (1–4), and explanation.
+No markdown, no commentary, no prose — only the JSON array itself.
+${basePrompt}
+`;
+
+  async function generateOnce(prompt, label) {
+    console.log(`⚙️ Running ${label} AI generation...`);
     const response = await openai.chat.completions.create({
       model: MODEL,
       messages: [
-        {
-          role: "system",
-          content: "You are a precise quiz generator that outputs strict JSON arrays only.",
-        },
+        { role: "system", content: "You are a JSON-only quiz generator. Output must start with [ and end with ]." },
         { role: "user", content: prompt },
       ],
       temperature: 0.7,
-      max_tokens: 1200,
+      max_tokens: 1500,
     });
-
     const raw = response.choices?.[0]?.message?.content || "";
-    let jsonString = findJsonCodeBlock(raw) || findBalanced(raw) || repairJsonString(raw);
-    let parsed = [];
+    console.log(`🧠 Raw AI output (${label}, first 500 chars):`, raw.slice(0, 500));
+    return raw;
+  }
 
-    try {
-      parsed = JSON.parse(jsonString);
-    } catch (err) {
-      console.warn("⚠️ JSON parse failed:", err.message);
-      try {
-        parsed = JSON.parse(repairJsonString(jsonString));
-      } catch {
-        parsed = [];
-      }
-    }
+  try {
+    // First attempt with the creative prompt
+    const rawPrimary = await generateOnce(basePrompt, "Primary");
+    let parsed = tryParseAIResponse(rawPrimary);
 
     if (validateQuestionsArray(parsed)) {
-      console.log(`✅ Quiz generated with ${parsed.length} questions`);
-      return { questions: parsed, reason: "AI generated" };
-    } else {
-      console.warn("⚠️ Invalid AI quiz JSON, using local fallback");
-      return { questions: localGenerator(text, numQuestions), reason: "Invalid AI JSON" };
+      console.log(`✅ Quiz generated successfully with ${parsed.length} questions`);
+      return { questions: parsed, reason: "AI primary success" };
     }
+
+    // Retry with stricter version
+    console.warn("⚠️ Invalid AI JSON, retrying with strict mode...");
+    const rawRetry = await generateOnce(strictPrompt, "Retry");
+    parsed = tryParseAIResponse(rawRetry);
+
+    if (validateQuestionsArray(parsed)) {
+      console.log(`✅ Quiz generated successfully after retry with ${parsed.length} questions`);
+      return { questions: parsed, reason: "AI retry success" };
+    }
+
+    // Final fallback
+    console.warn("⚠️ Both AI attempts failed, using local fallback.");
+    return { questions: localGenerator(text, numQuestions), reason: "AI invalid, local fallback" };
+
   } catch (err) {
     console.error("❌ OpenRouter error:", err.message);
     return { questions: localGenerator(text, numQuestions), reason: "OpenRouter error" };
