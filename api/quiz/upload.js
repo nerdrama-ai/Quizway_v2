@@ -154,7 +154,13 @@ export default async function handler(req, res) {
       } questions`
     );
 
-    res.json({ quiz, s3Url });
+    // ✅ Flatten and return the quiz response for the frontend
+    res.status(200).json({
+      ...quiz,   // spreads out { questions, reason }
+      s3Url,
+      success: true,
+    });
+
   } catch (err) {
     console.error(`[${requestId}] ❌ Handler error:`, err);
     res.status(500).json({ error: err.message || "Internal Server Error" });
