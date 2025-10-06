@@ -10,6 +10,7 @@ if (!OPENROUTER_API_KEY) {
   console.error("❌ Missing OpenRouter API key! Please add OPENAI_API_KEY in Vercel.");
 }
 
+// Initialize OpenRouter client
 const openai = new OpenAI({
   apiKey: OPENROUTER_API_KEY,
   baseURL: OPENROUTER_BASE_URL,
@@ -19,12 +20,12 @@ console.log("🔗 Using OpenRouter API base:", OPENROUTER_BASE_URL);
 
 // --- Utility helpers ---
 function findJsonCodeBlock(s) {
-  const m = s.match(/```(?:json)?\\s*([\\s\\S]*?)\\s*```/i);
+  const m = s.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   return m && m[1] ? m[1].trim() : null;
 }
 
 function findBalanced(s) {
-  const start = s.search(/[\\{\\[]/);
+  const start = s.search(/[\{\[]/);
   if (start === -1) return null;
   const openChar = s[start];
   const closeChar = openChar === "{" ? "}" : "]";
@@ -42,15 +43,16 @@ function findBalanced(s) {
 function repairJsonString(str) {
   if (!str || typeof str !== "string") return str;
   let s = str.trim();
-  const first = s.search(/[\\{\\[]/);
+  const first = s.search(/[\{\[]/);
   if (first !== -1) s = s.slice(first);
   const lastClose = Math.max(s.lastIndexOf("}"), s.lastIndexOf("]"));
   if (lastClose !== -1) s = s.slice(0, lastClose + 1);
-  s = s.replace(/,\\s*([}\\]])/g, "$1");
-  s = s.replace(/[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]/g, "");
+  s = s.replace(/,\s*([}\]])/g, "$1");
+  s = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
   return s;
 }
 
+// ✅ Validation updated to check `correct` instead of `answer`
 function validateQuestionsArray(arr) {
   if (!Array.isArray(arr)) return false;
   for (const q of arr) {
@@ -72,18 +74,18 @@ function validateQuestionsArray(arr) {
   return true;
 }
 
-// --- Local fallback generator ---
-function localGenerator(text, numQuestions = 8) {
+// --- Local fallback ---
+function localGenerator(text, numQuestions = 5) {
   const sentences = text
-    .replace(/\\s+/g, " ")
-    .split(/[.?!]\\s+/)
+    .replace(/\s+/g, " ")
+    .split(/[.?!]\s+/)
     .map((s) => s.trim())
-    .filter((s) => s.length > 40);
+    .filter((s) => s.length > 30);
 
   const questions = [];
   for (let i = 0; i < Math.min(numQuestions, sentences.length); i++) {
     const s = sentences[i];
-    const words = s.split(/\\s+/).filter((w) => /[A-Za-z]/.test(w));
+    const words = s.split(/\s+/).filter((w) => /[A-Za-z]/.test(w));
     const correctWord = words.sort((a, b) => b.length - a.length)[0] || "Answer";
     const correct = correctWord.replace(/[^A-Za-z0-9-]/g, "");
     const questionText = s.replace(correctWord, "_____");
@@ -103,120 +105,81 @@ function localGenerator(text, numQuestions = 8) {
   return questions;
 }
 
-// --- Phase 1: Identify all topics and subtopics ---
-async function identifyTopics(text) {
-  const topicPrompt = `
-Analyze the following text and identify all its major topics and key subtopics.
-Return a JSON array like:
-[
-  {
-    "topic": "Regression Analysis",
-    "subtopics": ["Simple Linear Regression", "Multiple Regression", "Assumptions", "Applications"]
-  },
-  {
-    "topic": "Correlation",
-    "subtopics": ["Pearson Coefficient", "Causation", "Interpretation"]
-  }
-]
-Focus on conceptual clusters, not paragraphs.
-Text:
-${text.slice(0, 8000)}
-`;
-
-  try {
-    const resp = await openai.chat.completions.create({
-      model: MODEL,
-      messages: [
-        { role: "system", content: "You are an educational topic-mapper that outputs JSON only." },
-        { role: "user", content: topicPrompt },
-      ],
-      temperature: 0.5,
-      max_tokens: 900,
-    });
-
-    const raw = resp.choices?.[0]?.message?.content || "";
-    let jsonString = findJsonCodeBlock(raw) || findBalanced(raw) || repairJsonString(raw);
-    const parsed = JSON.parse(jsonString);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (err) {
-    console.warn("⚠️ Topic extraction failed:", err.message);
-    return [];
-  }
-}
-
-// --- Phase 2: Generate conceptual questions per topic ---
-export async function generateQuizFromText(text) {
+// --- Main Quiz Generator using OpenRouter ---
+export async function generateQuizFromText(text, numQuestions = 5) {
   if (!text || text.trim().length < 100) {
     return { questions: [], reason: "Text too short" };
   }
 
-  try {
-    const topics = await identifyTopics(text);
-    if (topics.length === 0) {
-      console.warn("⚠️ No topics found, using fallback");
-      return { questions: localGenerator(text, 8), reason: "No topics detected" };
-    }
+  const prompt = `
+Generate exactly ${numQuestions} multiple-choice quiz questions from the following text.
+Each question must have:
+- "question": the question text
+- "options": exactly 4 unique answer choices
+- "hint": a short helpful hint
+- "correct": the correct option number (1–4)
+- "explanation": a brief explanation of why that option is correct
 
-    console.log(`🧩 Found ${topics.length} topics — generating conceptual questions...`);
-    let allQuestions = [];
+Return ONLY valid JSON (no markdown, no commentary).
+Example:
+[
+  {
+    "id": "1",
+    "question": "What is linear regression used for?",
+    "options": [
+      "Predicting continuous outcomes",
+      "Predicting categorical outcomes",
+      "Data encryption",
+      "Sorting data"
+    ],
+    "hint": "Think about the type of variable predicted.",
+    "correct": 1,
+    "explanation": "Linear regression predicts continuous outcomes using a linear relationship."
+  }
+]
 
-    for (const topic of topics) {
-      const subtopics = topic.subtopics?.join(", ") || "";
-      const numQs = Math.floor(Math.random() * 2) + 3; // 3–4 questions per topic
-
-      const topicPrompt = `
-From the topic "${topic.topic}" and its subtopics (${subtopics}), generate ${numQs} multiple-choice questions.
-Each question must explore a different angle:
-- Conceptual understanding (what/why)
-- Example or application
-- Common misconception or tricky point
-- Equation or definition (if relevant)
-
-Each question must include:
-- "question": string
-- "options": array of 4 strings
-- "hint": short string
-- "correct": number (1–4)
-- "explanation": short explanation of the answer
-
-Return ONLY JSON (no markdown).
+Text:
+${text.slice(0, 4000)}
 `;
 
-      const resp = await openai.chat.completions.create({
-        model: MODEL,
-        messages: [
-          { role: "system", content: "You are a creative quiz generator that produces conceptually rich JSON output only." },
-          { role: "user", content: topicPrompt },
-        ],
-        temperature: 0.9, // higher creativity
-        max_tokens: 1200,
-      });
+  try {
+    const response = await openai.chat.completions.create({
+      model: MODEL,
+      messages: [
+        {
+          role: "system",
+          content: "You are a precise quiz generator that outputs strict JSON arrays only.",
+        },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.7,
+      max_tokens: 1200,
+    });
 
-      const raw = resp.choices?.[0]?.message?.content || "";
-      let jsonString = findJsonCodeBlock(raw) || findBalanced(raw) || repairJsonString(raw);
-      let parsed = [];
+    const raw = response.choices?.[0]?.message?.content || "";
+    let jsonString = findJsonCodeBlock(raw) || findBalanced(raw) || repairJsonString(raw);
+    let parsed = [];
 
+    try {
+      parsed = JSON.parse(jsonString);
+    } catch (err) {
+      console.warn("⚠️ JSON parse failed:", err.message);
       try {
-        parsed = JSON.parse(jsonString);
+        parsed = JSON.parse(repairJsonString(jsonString));
       } catch {
         parsed = [];
       }
-
-      if (validateQuestionsArray(parsed)) {
-        allQuestions = allQuestions.concat(parsed);
-      }
     }
 
-    if (allQuestions.length === 0) {
-      console.warn("⚠️ No valid AI quiz output, using fallback");
-      return { questions: localGenerator(text, 10), reason: "Invalid AI output" };
+    if (validateQuestionsArray(parsed)) {
+      console.log(`✅ Quiz generated with ${parsed.length} questions`);
+      return { questions: parsed, reason: "AI generated" };
+    } else {
+      console.warn("⚠️ Invalid AI quiz JSON, using local fallback");
+      return { questions: localGenerator(text, numQuestions), reason: "Invalid AI JSON" };
     }
-
-    console.log(`✅ Generated ${allQuestions.length} creative questions from ${topics.length} topics.`);
-    return { questions: allQuestions, reason: "AI generated by topic clusters" };
-
   } catch (err) {
     console.error("❌ OpenRouter error:", err.message);
-    return { questions: localGenerator(text, 8), reason: "OpenRouter error" };
+    return { questions: localGenerator(text, numQuestions), reason: "OpenRouter error" };
   }
 }
