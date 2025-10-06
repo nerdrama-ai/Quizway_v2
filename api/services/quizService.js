@@ -3,17 +3,32 @@ import OpenAI from "openai";
 
 // --- Configuration ---
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const OPENAI_API_BASE =
+  process.env.OPENAI_API_BASE || "https://api.openai.com/v1";
 const MODEL = process.env.OPENAI_MODEL || "gpt-3.5-turbo";
-const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
+
+// Initialize OpenAI / OpenRouter client
+const openai = OPENAI_API_KEY
+  ? new OpenAI({
+      apiKey: OPENAI_API_KEY,
+      baseURL: OPENAI_API_BASE,
+    })
+  : null;
+
+if (openai) {
+  if (OPENAI_API_BASE.includes("openrouter"))
+    console.log("🔗 Using OpenRouter API base:", OPENAI_API_BASE);
+  else console.log("🔗 Using OpenAI API base:", OPENAI_API_BASE);
+}
 
 // --- Utility helpers for JSON repair/extraction ---
 function findJsonCodeBlock(s) {
-  const m = s.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const m = s.match(/```(?:json)?\\s*([\\s\\S]*?)\\s*```/i);
   return m && m[1] ? m[1].trim() : null;
 }
 
 function findBalanced(s) {
-  const start = s.search(/[\{\[]/);
+  const start = s.search(/[\\{\\[]/);
   if (start === -1) return null;
   const openChar = s[start];
   const closeChar = openChar === "{" ? "}" : "]";
@@ -31,12 +46,12 @@ function findBalanced(s) {
 function repairJsonString(str) {
   if (!str || typeof str !== "string") return str;
   let s = str.trim();
-  const first = s.search(/[\{\[]/);
+  const first = s.search(/[\\{\\[]/);
   if (first !== -1) s = s.slice(first);
   const lastClose = Math.max(s.lastIndexOf("}"), s.lastIndexOf("]"));
   if (lastClose !== -1) s = s.slice(0, lastClose + 1);
-  s = s.replace(/,\s*([}\]])/g, "$1");
-  s = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+  s = s.replace(/,\\s*([}\\]])/g, "$1");
+  s = s.replace(/[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]/g, "");
   return s;
 }
 
@@ -61,18 +76,18 @@ function validateQuestionsArray(arr) {
   return true;
 }
 
-// --- Local fallback (no OpenAI key) ---
-function localGenerator(text, numQuestions = 5) {
+// --- Local fallback (no OpenAI key or error) ---
+function localGenerator(text, numQuestions = 5, reason = "Local fallback") {
   const sentences = text
-    .replace(/\s+/g, " ")
-    .split(/[.?!]\s+/)
+    .replace(/\\s+/g, " ")
+    .split(/[.?!]\\s+/)
     .map((s) => s.trim())
     .filter((s) => s.length > 30);
 
   const questions = [];
   for (let i = 0; i < Math.min(numQuestions, sentences.length); i++) {
     const s = sentences[i];
-    const words = s.split(/\s+/).filter((w) => /[A-Za-z]/.test(w));
+    const words = s.split(/\\s+/).filter((w) => /[A-Za-z]/.test(w));
     const answerWord = words.sort((a, b) => b.length - a.length)[0] || "Answer";
     const correct = answerWord.replace(/[^A-Za-z0-9-]/g, "");
     const questionText = s.replace(answerWord, "_____");
@@ -89,18 +104,18 @@ function localGenerator(text, numQuestions = 5) {
       explanation: `The missing word '${correct}' fits best in the context.`,
     });
   }
+  console.warn(`⚠️ Using local quiz generator due to: ${reason}`);
   return questions;
 }
 
-// --- Main generator using OpenAI ---
+// --- Main generator using OpenAI/OpenRouter ---
 export async function generateQuizFromText(text, numQuestions = 5) {
   if (!text || text.trim().length < 100) {
     return { questions: [], reason: "Text too short" };
   }
 
   if (!openai) {
-    console.warn("⚠️ OPENAI_API_KEY not set; using local generator");
-    return { questions: localGenerator(text, numQuestions), reason: "Local fallback" };
+    return { questions: localGenerator(text, numQuestions, "No API key"), reason: "Local fallback" };
   }
 
   const prompt = `
@@ -164,11 +179,11 @@ ${text.slice(0, 4000)}
       console.log(`✅ Quiz generated with ${parsed.length} questions`);
       return { questions: parsed, reason: "AI generated" };
     } else {
-      console.warn("⚠️ Invalid AI quiz JSON, using local fallback");
-      return { questions: localGenerator(text, numQuestions), reason: "Invalid AI JSON" };
+      console.warn("⚠️ Invalid AI JSON, using local fallback");
+      return { questions: localGenerator(text, numQuestions, "Invalid JSON"), reason: "Invalid AI JSON" };
     }
   } catch (err) {
-    console.error("❌ OpenAI error:", err.message);
-    return { questions: localGenerator(text, numQuestions), reason: "OpenAI error" };
+    console.error("❌ OpenAI/OpenRouter error:", err.message);
+    return { questions: localGenerator(text, numQuestions, err.message), reason: "AI error" };
   }
 }
