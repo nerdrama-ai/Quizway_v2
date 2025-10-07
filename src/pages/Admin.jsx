@@ -38,11 +38,8 @@ export default function Admin({ onHome }) {
 
   /** ---------- TOPIC STATE ---------- **/
   const [topics, setTopics] = useState(() => getTopics() || [])
-  const [activeTopicId, setActiveTopicId] = useState(() => getTopics()?.[0]?.id || null)
-  const activeTopic = useMemo(
-    () => topics.find((t) => t.id === activeTopicId) || null,
-    [topics, activeTopicId]
-  )
+  const [activeTopicId, setActiveTopicId] = useState(null)
+  const [editingTopic, setEditingTopic] = useState(null)
   const [search, setSearch] = useState("")
   const [toasts, setToasts] = useState([])
   const [loadingQuiz, setLoadingQuiz] = useState(false)
@@ -50,6 +47,12 @@ export default function Admin({ onHome }) {
   const [isSaving, setIsSaving] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadedFile, setUploadedFile] = useState(null)
+  const uploadIntervalRef = useRef(null)
+
+  const activeTopic = useMemo(
+    () => topics.find((t) => t.id === activeTopicId) || null,
+    [topics, activeTopicId]
+  )
 
   /** ---------- UTILS ---------- **/
   const addToast = (message, type = "info") => {
@@ -60,8 +63,8 @@ export default function Admin({ onHome }) {
 
   const saveAndSetTopics = (updated) => {
     setTopics(updated)
-    setIsSaving(true)
     saveTopics(updated)
+    setIsSaving(true)
     setTimeout(() => setIsSaving(false), 1000)
   }
 
@@ -74,10 +77,10 @@ export default function Admin({ onHome }) {
     setLoadingQuiz(true)
     setUploadProgress(0)
 
-    const simulateUpload = setInterval(() => {
+    uploadIntervalRef.current = setInterval(() => {
       setUploadProgress((prev) => {
         if (prev >= 100) {
-          clearInterval(simulateUpload)
+          clearInterval(uploadIntervalRef.current)
           setLoadingQuiz(false)
           addToast(`File "${file.name}" uploaded successfully!`, "success")
           return 100
@@ -85,6 +88,14 @@ export default function Admin({ onHome }) {
         return prev + 10
       })
     }, 150)
+  }
+
+  const handleCancelUpload = () => {
+    if (uploadIntervalRef.current) clearInterval(uploadIntervalRef.current)
+    setUploadedFile(null)
+    setLoadingQuiz(false)
+    setUploadProgress(0)
+    addToast("Upload cancelled", "error")
   }
 
   const handleFileChange = (e) => {
@@ -151,7 +162,38 @@ export default function Admin({ onHome }) {
     addToast(`Downloaded "${activeTopic.title}" as PDF`, "success")
   }
 
-  /** ---------- UI SECTIONS ---------- **/
+  /** ---------- EDITING ---------- **/
+  const handleEditTopic = (topic) => {
+    setEditingTopic({ ...topic })
+  }
+
+  const handleSaveEditedTopic = () => {
+    const updated = topics.map((t) => (t.id === editingTopic.id ? editingTopic : t))
+    saveAndSetTopics(updated)
+    setEditingTopic(null)
+    addToast("Topic updated successfully!", "success")
+  }
+
+  const handleQuestionChange = (index, field, value) => {
+    const updatedQuestions = [...editingTopic.questions]
+    updatedQuestions[index][field] = value
+    setEditingTopic({ ...editingTopic, questions: updatedQuestions })
+  }
+
+  const handleAddQuestion = () => {
+    const newQuestion = { question: "New question", options: ["", "", "", ""], answer: "" }
+    setEditingTopic({
+      ...editingTopic,
+      questions: [...(editingTopic.questions || []), newQuestion],
+    })
+  }
+
+  const handleDeleteQuestion = (index) => {
+    const updatedQuestions = editingTopic.questions.filter((_, i) => i !== index)
+    setEditingTopic({ ...editingTopic, questions: updatedQuestions })
+  }
+
+  /** ---------- UI ---------- **/
   if (!isAuthenticated) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen bg-gray-900 text-white">
@@ -159,23 +201,20 @@ export default function Admin({ onHome }) {
           <h2 className="text-2xl font-bold mb-6 text-center">Admin Login</h2>
           <form onSubmit={handleLogin} className="space-y-4">
             <input
-              className="w-full p-2 rounded-lg bg-gray-700 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full p-2 rounded-lg bg-gray-700 text-white"
               placeholder="Username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
             />
             <input
               type="password"
-              className="w-full p-2 rounded-lg bg-gray-700 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full p-2 rounded-lg bg-gray-700 text-white"
               placeholder="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
             {error && <p className="text-red-400 text-sm">{error}</p>}
-            <button
-              type="submit"
-              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 rounded-lg"
-            >
+            <button className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2 rounded-lg">
               Log In
             </button>
           </form>
@@ -188,41 +227,55 @@ export default function Admin({ onHome }) {
   return (
     <div className="flex min-h-screen bg-gray-100 text-gray-900">
       {/* Sidebar */}
-      <aside className="w-64 bg-gray-900 text-gray-100 flex flex-col">
-        <div className="p-4 border-b border-gray-700">
-          <h2 className="text-xl font-semibold text-indigo-400">Quizway Admin</h2>
+      <aside className="w-64 bg-gray-900 text-gray-100 flex flex-col justify-between">
+        <div>
+          <div className="p-4 border-b border-gray-700">
+            <h2 className="text-xl font-semibold text-indigo-400">Quizway Admin</h2>
+          </div>
+          <nav className="p-4 space-y-2">
+            <button
+              onClick={() => {
+                setShowUpload(false)
+                setEditingTopic(null)
+              }}
+              className={`block w-full text-left px-3 py-2 rounded-lg ${
+                !showUpload ? "bg-indigo-600 text-white" : "hover:bg-gray-800"
+              }`}
+            >
+              Topics
+            </button>
+            <button
+              onClick={() => {
+                setShowUpload(true)
+                setEditingTopic(null)
+              }}
+              className={`block w-full text-left px-3 py-2 rounded-lg ${
+                showUpload ? "bg-indigo-600 text-white" : "hover:bg-gray-800"
+              }`}
+            >
+              Upload Quiz
+            </button>
+          </nav>
         </div>
-        <nav className="flex-1 p-4 space-y-2">
-          <button
-            onClick={() => setShowUpload(false)}
-            className={`block w-full text-left px-3 py-2 rounded-lg ${
-              !showUpload ? "bg-indigo-600 text-white" : "hover:bg-gray-800"
-            }`}
-          >
-            Topics
-          </button>
-          <button
-            onClick={() => setShowUpload(true)}
-            className={`block w-full text-left px-3 py-2 rounded-lg ${
-              showUpload ? "bg-indigo-600 text-white" : "hover:bg-gray-800"
-            }`}
-          >
-            Upload Quiz
-          </button>
+        <div className="p-4 border-t border-gray-700">
           <button
             onClick={handleLogout}
-            className="block w-full text-left px-3 py-2 mt-4 bg-red-600 hover:bg-red-700 rounded-lg"
+            className="w-full bg-red-600 hover:bg-red-700 px-3 py-2 rounded-lg text-left"
           >
             Logout
           </button>
-        </nav>
+        </div>
       </aside>
 
       {/* Main Content */}
       <main className="flex-1 p-8 overflow-y-auto">
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-2xl font-bold">
-            {showUpload ? "Upload Quiz Data" : "Manage Topics"}
+            {editingTopic
+              ? `Editing: ${editingTopic.title}`
+              : showUpload
+              ? "Upload Quiz Data"
+              : "Manage Topics"}
           </h1>
           <button
             onClick={onHome}
@@ -233,7 +286,76 @@ export default function Admin({ onHome }) {
         </div>
 
         {/* Conditional Views */}
-        {!showUpload ? (
+        {editingTopic ? (
+          <div className="bg-white p-6 rounded-xl shadow-md">
+            <div className="mb-4">
+              <input
+                className="w-full border p-2 rounded-md mb-4"
+                value={editingTopic.title}
+                onChange={(e) =>
+                  setEditingTopic({ ...editingTopic, title: e.target.value })
+                }
+              />
+              <button
+                onClick={handleAddQuestion}
+                className="bg-green-600 hover:bg-green-700 text-white text-sm px-3 py-1 rounded-md mb-4"
+              >
+                + Add Question
+              </button>
+            </div>
+            {editingTopic.questions?.map((q, i) => (
+              <div key={i} className="mb-6 border-b pb-4">
+                <input
+                  className="w-full border p-2 rounded-md mb-2"
+                  value={q.question}
+                  onChange={(e) =>
+                    handleQuestionChange(i, "question", e.target.value)
+                  }
+                />
+                {q.options?.map((opt, idx) => (
+                  <input
+                    key={idx}
+                    className="w-full border p-2 rounded-md mb-1 text-sm"
+                    value={opt}
+                    onChange={(e) => {
+                      const updatedOptions = [...q.options]
+                      updatedOptions[idx] = e.target.value
+                      handleQuestionChange(i, "options", updatedOptions)
+                    }}
+                  />
+                ))}
+                <input
+                  className="w-full border p-2 rounded-md mb-2 text-sm"
+                  placeholder="Correct answer"
+                  value={q.answer || ""}
+                  onChange={(e) =>
+                    handleQuestionChange(i, "answer", e.target.value)
+                  }
+                />
+                <button
+                  onClick={() => handleDeleteQuestion(i)}
+                  className="bg-red-600 hover:bg-red-700 text-white text-xs px-3 py-1 rounded-md"
+                >
+                  Delete Question
+                </button>
+              </div>
+            ))}
+            <div className="flex justify-between mt-4">
+              <button
+                onClick={() => setEditingTopic(null)}
+                className="bg-gray-400 hover:bg-gray-500 text-white px-4 py-2 rounded-md"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveEditedTopic}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md"
+              >
+                Save Changes
+              </button>
+            </div>
+          </div>
+        ) : !showUpload ? (
           <div>
             <div className="mb-4 flex items-center justify-between">
               <input
@@ -245,14 +367,14 @@ export default function Admin({ onHome }) {
               />
               {isSaving && <span className="text-sm text-gray-500">Saving...</span>}
             </div>
-
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {topics
-                .filter((t) => t.title.toLowerCase().includes(search.toLowerCase()))
+                .filter((t) =>
+                  t.title.toLowerCase().includes(search.toLowerCase())
+                )
                 .map((topic) => (
                   <div
                     key={topic.id}
-                    onClick={() => setActiveTopicId(topic.id)}
                     className={`cursor-pointer p-4 rounded-xl shadow-md ${
                       topic.id === activeTopicId
                         ? "bg-indigo-100 border border-indigo-400"
@@ -263,17 +385,23 @@ export default function Admin({ onHome }) {
                     <p className="text-sm text-gray-600 mt-1">
                       {topic.questions?.length || 0} questions
                     </p>
-                    {topic.id === activeTopicId && (
+                    <div className="mt-3 flex gap-2">
                       <button
-                        onClick={(e) => {
-                          e.stopPropagation()
+                        onClick={() => handleEditTopic(topic)}
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-3 py-1 rounded-md"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => {
+                          setActiveTopicId(topic.id)
                           handleDownloadPDF()
                         }}
-                        className="mt-3 bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-3 py-1 rounded-md"
+                        className="bg-gray-700 hover:bg-gray-800 text-white text-sm px-3 py-1 rounded-md"
                       >
-                        Download PDF
+                        PDF
                       </button>
-                    )}
+                    </div>
                   </div>
                 ))}
             </div>
@@ -281,7 +409,6 @@ export default function Admin({ onHome }) {
         ) : (
           <div className="p-6 bg-white rounded-xl shadow-md">
             <h2 className="text-lg font-semibold mb-4">Upload Quiz File</h2>
-
             <div
               onDrop={handleDrop}
               onDragOver={handleDragOver}
@@ -290,19 +417,32 @@ export default function Admin({ onHome }) {
             >
               {uploadedFile ? (
                 <div>
-                  <p className="font-medium text-gray-700">
-                    File selected: <span className="text-indigo-600">{uploadedFile.name}</span>
+                  <p className="font-medium text-gray-700 mb-3">
+                    File selected:{" "}
+                    <span className="text-indigo-600">{uploadedFile.name}</span>
                   </p>
-                  <ProgressBar loading={loadingQuiz} />
-                  {loadingQuiz ? (
-                    <p className="text-sm text-gray-500 mt-2">
-                      Uploading... {uploadProgress}%
-                    </p>
-                  ) : (
-                    <p className="text-green-600 font-medium mt-2">
-                      Upload complete 🎉
-                    </p>
-                  )}
+                  <div className="flex flex-col items-center justify-center">
+                    <div className="w-1/2">
+                      <ProgressBar loading={loadingQuiz} />
+                    </div>
+                    {loadingQuiz ? (
+                      <>
+                        <p className="text-sm text-gray-500 mt-2">
+                          Uploading... {uploadProgress}%
+                        </p>
+                        <button
+                          onClick={handleCancelUpload}
+                          className="mt-3 bg-red-600 hover:bg-red-700 text-white text-sm px-3 py-1 rounded-md"
+                        >
+                          Cancel Upload
+                        </button>
+                      </>
+                    ) : (
+                      <p className="text-green-600 font-medium mt-2">
+                        Upload complete 🎉
+                      </p>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <p className="text-gray-600">
@@ -341,4 +481,3 @@ export default function Admin({ onHome }) {
     </div>
   )
 }
-
