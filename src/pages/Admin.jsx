@@ -39,6 +39,7 @@ export default function Admin({ onHome }) {
   /** ---------- TOPIC STATE ---------- **/
   const [topics, setTopics] = useState(() => getTopics() || [])
   const [activeTopicId, setActiveTopicId] = useState(() => getTopics()?.[0]?.id || null)
+  const [selectedTopicIds, setSelectedTopicIds] = useState([]) // multi-select IDs
   const activeTopic = useMemo(() => topics.find((t) => t.id === activeTopicId) || null, [topics, activeTopicId])
   const [search, setSearch] = useState("")
   const [toasts, setToasts] = useState([])
@@ -47,7 +48,7 @@ export default function Admin({ onHome }) {
   const [isSaving, setIsSaving] = useState(false)
   const [uploadedFile, setUploadedFile] = useState(null)
 
-  /** (optional) local editing topic state (keeps UI from code2) **/
+  /** (optional) local editing topic state **/
   const [editingTopic, setEditingTopic] = useState(null)
   const fileInputRef = useRef(null)
 
@@ -65,7 +66,7 @@ export default function Admin({ onHome }) {
     setTimeout(() => setIsSaving(false), 500)
   }
 
-  /** ---------- Topic CRUD (from code1) ---------- **/
+  /** ---------- Topic CRUD ---------- **/
   const handleAddTopic = () => setShowUpload(true)
 
   const createEmptyTopic = () => {
@@ -87,8 +88,9 @@ export default function Admin({ onHome }) {
     if (!window.confirm("Delete this topic?")) return
     const updated = topics.filter((t) => t.id !== id)
     saveAndSetTopics(updated)
+    setSelectedTopicIds((prev) => prev.filter((tid) => tid !== id))
     if (activeTopicId === id) setActiveTopicId(updated[0]?.id || null)
-    addToast("Topic deleted", "success")
+    addToast("Topic deleted", "warning")
   }
 
   const handleUpdateTopic = (id, key, value) => {
@@ -121,7 +123,7 @@ export default function Admin({ onHome }) {
     saveAndSetTopics(updated)
   }
 
-  /** ---------- Generate Quiz From PDF ---------- **/
+  /** ---------- Generate Quiz From PDF (upload) ---------- **/
   const handleUploadPdf = async (file) => {
     if (!file) return
     setUploadedFile(file)
@@ -147,13 +149,10 @@ export default function Admin({ onHome }) {
         questions: data.questions.map((q, i) => ({
           id: q.id || String(i + 1),
           question: q.question,
-          // Accept both 'options' or fallback to array if missing
           options: q.options || q.opts || ["", "", "", ""],
-          // keep original code1 shape: use 'correct' index if provided, else attempt to map other fields
           correct: typeof q.answer === "number" ? q.answer : q.correct ?? 0,
           hint: q.hint || "",
           explanation: q.explanation || "",
-          // also preserve 'answer' field if API supplies string answer
           answer: q.answer && typeof q.answer !== "number" ? q.answer : undefined,
         })),
       }
@@ -184,9 +183,12 @@ export default function Admin({ onHome }) {
 
   const handleDragOver = (e) => e.preventDefault()
 
-  /** ---------- PDF GENERATION ---------- **/
-  const handleDownloadPDF = () => {
-    if (!activeTopic) {
+  /** ---------- PDF GENERATION (single topic) ----------
+      Accepts optional `topicParam`. If not provided, falls back to activeTopic
+  */
+  const handleDownloadPDF = (topicParam) => {
+    const topic = topicParam || activeTopic
+    if (!topic) {
       addToast("Please select a topic first!", "error")
       return
     }
@@ -194,16 +196,16 @@ export default function Admin({ onHome }) {
     const doc = new jsPDF()
     doc.setFont("helvetica", "bold")
     doc.setFontSize(18)
-    doc.text(`Quizway - ${activeTopic.title} Quiz`, 14, 20)
+    doc.text(`Quizway - ${topic.title} Quiz`, 14, 20)
 
     doc.setFont("helvetica", "normal")
     doc.setFontSize(12)
     doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 30)
-    doc.text(`Total Questions: ${activeTopic.questions?.length || 0}`, 14, 38)
+    doc.text(`Total Questions: ${topic.questions?.length || 0}`, 14, 38)
 
     let yPos = 50
 
-    activeTopic.questions?.forEach((q, index) => {
+    topic.questions?.forEach((q, index) => {
       if (yPos > 270) {
         doc.addPage()
         yPos = 20
@@ -220,7 +222,6 @@ export default function Admin({ onHome }) {
         })
       }
 
-      // Print answer intelligently: prefer q.correct index (code1), otherwise q.answer (string)
       const answerText =
         typeof q.correct === "number" && q.options && q.options[q.correct] !== undefined
           ? q.options[q.correct]
@@ -237,14 +238,31 @@ export default function Admin({ onHome }) {
       }
     })
 
-    doc.save(`${activeTopic.title}_Quiz.pdf`)
-    addToast(`Downloaded "${activeTopic.title}" as PDF`, "success")
+    doc.save(`${topic.title}_Quiz.pdf`)
+    addToast(`Downloaded "${topic.title}" as PDF`, "success")
+  }
+
+  /** ---------- Bulk PDF Download ---------- **/
+  const handleBulkDownloadPDF = () => {
+    if (selectedTopicIds.length === 0) {
+      addToast("No topics selected for bulk download!", "error")
+      return
+    }
+
+    // Download each selected topic's PDF. Note: this triggers multiple downloads.
+    selectedTopicIds.forEach((id) => {
+      const topic = topics.find((t) => t.id === id)
+      if (topic) handleDownloadPDF(topic)
+    })
+    addToast(`Downloaded ${selectedTopicIds.length} PDFs`, "success")
   }
 
   /** ---------- Editing helpers ---------- **/
   const handleEditTopic = (topic) => {
     // create a deep-ish copy for safe editing in the UI
     setEditingTopic(JSON.parse(JSON.stringify(topic)))
+    // ensure the topic is active when editing
+    setActiveTopicId(topic.id)
   }
 
   const handleSaveEditedTopic = () => {
@@ -310,68 +328,63 @@ export default function Admin({ onHome }) {
   return (
     <div className="flex min-h-screen bg-gray-100 text-gray-900">
       {/* Sidebar */}
-<aside className="w-64 bg-gray-900 text-gray-100 flex flex-col justify-between">
-  <div>
-    {/* Header */}
-    <div className="p-4 border-b border-gray-700">
-      <h2 className="text-xl font-semibold text-indigo-400">Quizway Admin</h2>
-    </div>
+      <aside className="w-64 bg-gray-900 text-gray-100 flex flex-col justify-between">
+        <div>
+          <div className="p-4 border-b border-gray-700">
+            <h2 className="text-xl font-semibold text-indigo-400">Quizway Admin</h2>
+          </div>
 
-    {/* Navigation */}
-    <nav className="p-4 space-y-2">
-      <button
-        onClick={() => {
-          setShowUpload(false)
-          setEditingTopic(null)
-        }}
-        className={`block w-full text-left px-3 py-2 rounded-lg ${
-          !showUpload ? "bg-indigo-600 text-white" : "hover:bg-gray-800"
-        }`}
-      >
-        Topics
-      </button>
+          <nav className="p-4 space-y-2">
+            <button
+              onClick={() => {
+                setShowUpload(false)
+                setEditingTopic(null)
+              }}
+              className={`block w-full text-left px-3 py-2 rounded-lg ${
+                !showUpload ? "bg-indigo-600 text-white" : "hover:bg-gray-800"
+              }`}
+            >
+              Topics
+            </button>
 
-      <button
-        onClick={() => {
-          setShowUpload(true)
-          setEditingTopic(null)
-        }}
-        className={`block w-full text-left px-3 py-2 rounded-lg ${
-          showUpload ? "bg-indigo-600 text-white" : "hover:bg-gray-800"
-        }`}
-      >
-        Upload Quiz
-      </button>
+            <button
+              onClick={() => {
+                setShowUpload(true)
+                setEditingTopic(null)
+              }}
+              className={`block w-full text-left px-3 py-2 rounded-lg ${
+                showUpload ? "bg-indigo-600 text-white" : "hover:bg-gray-800"
+              }`}
+            >
+              Upload Quiz
+            </button>
 
-      <button
-        onClick={() => createEmptyTopic()}
-        className="block w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 mt-2"
-      >
-        + New Topic
-      </button>
-    </nav>
-  </div>
+            <button
+              onClick={() => createEmptyTopic()}
+              className="block w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 mt-2"
+            >
+              + New Topic
+            </button>
+          </nav>
+        </div>
 
-  {/* Logout */}
-  <div className="p-4 border-t border-gray-700">
-    <button
-      onClick={handleLogout}
-      className="w-full bg-red-600 hover:bg-red-700 px-3 py-2 rounded-lg text-left"
-    >
-      Logout
-    </button>
-  </div>
-</aside>
+        <div className="p-4 border-t border-gray-700">
+          <button
+            onClick={handleLogout}
+            className="w-full bg-red-600 hover:bg-red-700 px-3 py-2 rounded-lg text-left"
+          >
+            Logout
+          </button>
+        </div>
+      </aside>
+
       {/* Main Content */}
       <main className="flex-1 p-8 overflow-y-auto">
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-2xl font-bold">
-            {editingTopic
-              ? `Editing: ${editingTopic.title}`
-              : showUpload
-              ? "Upload Quiz Data"
-              : "Manage Topics"}
+            {editingTopic ? `Editing: ${editingTopic.title}` : showUpload ? "Upload Quiz Data" : "Manage Topics"}
           </h1>
+
           <div className="flex items-center gap-3">
             <button
               onClick={onHome}
@@ -379,6 +392,18 @@ export default function Admin({ onHome }) {
             >
               Home
             </button>
+
+            {/* Bulk download button - only visible when not in upload/edit */}
+            {!showUpload && !editingTopic && (
+              <button
+                onClick={handleBulkDownloadPDF}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded-lg"
+              >
+                Download Selected PDFs
+              </button>
+            )}
+
+            {/* Single-topic download (keeps original behaviour) */}
             {!showUpload && !editingTopic && (
               <button
                 onClick={() => {
@@ -422,6 +447,7 @@ export default function Admin({ onHome }) {
                 + Add Question
               </button>
             </div>
+
             {editingTopic.questions?.map((q, i) => (
               <div key={q.id || i} className="mb-6 border-b pb-4">
                 <input
@@ -448,7 +474,6 @@ export default function Admin({ onHome }) {
                   placeholder="Correct answer index (0-based) or text"
                   value={q.correct ?? q.answer ?? ""}
                   onChange={(e) =>
-                    // try to keep both shapes: if numeric, set correct; else set answer
                     handleQuestionChange(i, isNaN(e.target.value) ? "answer" : "correct", isNaN(e.target.value) ? e.target.value : Number(e.target.value))
                   }
                 />
@@ -462,6 +487,7 @@ export default function Admin({ onHome }) {
                 </div>
               </div>
             ))}
+
             <div className="flex justify-between mt-4">
               <button
                 onClick={() => setEditingTopic(null)}
@@ -492,50 +518,112 @@ export default function Admin({ onHome }) {
               </div>
             </div>
 
+            {/* Topics grid - revamped but preserving features */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {topics
                 .filter((t) =>
                   t.title.toLowerCase().includes(search.toLowerCase())
                 )
-                .map((topic) => (
-                  <div
-                    key={topic.id}
-                    className={`cursor-pointer p-4 rounded-xl shadow-md ${
-                      topic.id === activeTopicId
-                        ? "bg-indigo-100 border border-indigo-400"
-                        : "bg-white hover:shadow-lg"
-                    }`}
-                  >
-                    <h3 className="font-semibold text-lg">{topic.title}</h3>
-                    <p className="text-sm text-gray-600 mt-1">
-                      {topic.questions?.length || 0} questions
-                    </p>
-                    <p className="text-xs text-gray-500 mt-1 truncate">{topic.description}</p>
-                    <div className="mt-3 flex gap-2">
+                .map((topic) => {
+                  const isSelected = selectedTopicIds.includes(topic.id)
+                  return (
+                    <div
+                      key={topic.id}
+                      className={`relative cursor-pointer p-5 rounded-xl shadow-md transition-all duration-200 ${
+                        isSelected
+                          ? "bg-indigo-100 border-2 border-indigo-500"
+                          : "bg-white hover:shadow-lg hover:-translate-y-1"
+                      }`}
+                      onClick={() => {
+                        // clicking the card sets it active (to allow later actions like single-download)
+                        setActiveTopicId(topic.id)
+                      }}
+                    >
+                      {/* Delete (cross) button */}
                       <button
-                        onClick={() => handleEditTopic(topic)}
-                        className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-3 py-1 rounded-md"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => {
-                          setActiveTopicId(topic.id)
-                          handleDownloadPDF()
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleDeleteTopic(topic.id)
                         }}
-                        className="bg-gray-700 hover:bg-gray-800 text-white text-sm px-3 py-1 rounded-md"
+                        className="absolute top-2 right-2 text-red-500 hover:text-red-700 text-lg font-bold"
+                        title="Delete topic"
                       >
-                        PDF
+                        ✕
                       </button>
-                      <button
-                        onClick={() => { setActiveTopicId(topic.id) }}
-                        className="bg-gray-200 hover:bg-gray-300 text-gray-800 text-sm px-3 py-1 rounded-md"
-                      >
-                        Select
-                      </button>
+
+                      {/* Tickmark when selected */}
+                      {isSelected && (
+                        <div className="absolute top-2 left-2 text-green-600 text-lg font-bold">
+                          ✓
+                        </div>
+                      )}
+
+                      {/* Title */}
+                      <h3 className="font-semibold text-lg text-gray-900 truncate pr-8">
+                        {topic.title}
+                      </h3>
+
+                      {/* Question count */}
+                      <p className="text-sm text-gray-600 mt-1">
+                        {topic.questions?.length || 0} questions
+                      </p>
+
+                      {/* First-line description */}
+                      {topic.description && (
+                        <p className="text-xs text-gray-500 mt-2 truncate">
+                          {topic.description}
+                        </p>
+                      )}
+
+                      {/* Action buttons */}
+                      <div className="mt-4 flex gap-2">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleDownloadPDF(topic)
+                          }}
+                          className="bg-gray-700 hover:bg-gray-800 text-white text-sm px-3 py-1 rounded-md"
+                        >
+                          Download PDF
+                        </button>
+
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setSelectedTopicIds((prev) =>
+                              prev.includes(topic.id)
+                                ? prev.filter((id) => id !== topic.id)
+                                : [...prev, topic.id]
+                            )
+                            addToast(
+                              isSelected
+                                ? `Unselected "${topic.title}"`
+                                : `Selected "${topic.title}"`,
+                              "success"
+                            )
+                          }}
+                          className={`text-sm px-3 py-1 rounded-md border ${
+                            isSelected
+                              ? "bg-green-600 border-green-600 text-white"
+                              : "bg-white border-gray-300 text-gray-800 hover:bg-gray-100"
+                          }`}
+                        >
+                          {isSelected ? "Selected" : "Select"}
+                        </button>
+
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleEditTopic(topic)
+                          }}
+                          className="bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-3 py-1 rounded-md"
+                        >
+                          Edit
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  )
+                })}
             </div>
           </div>
         ) : (
@@ -583,7 +671,6 @@ export default function Admin({ onHome }) {
             <div className="mt-4 flex gap-2">
               <button
                 onClick={() => {
-                  // if a file is selected but not processed, call upload
                   if (uploadedFile && !loadingQuiz) {
                     handleUploadPdf(uploadedFile)
                   } else if (!uploadedFile) {
