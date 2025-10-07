@@ -36,23 +36,20 @@ export default function Admin({ onHome }) {
     localStorage.removeItem("isAuthenticated")
   }
 
-  /** ---------- TOPIC STATE ---------- **/
+  /** ---------- TOPIC STATE (from code1) ---------- **/
   const [topics, setTopics] = useState(() => getTopics() || [])
-  const [activeTopicId, setActiveTopicId] = useState(null)
-  const [editingTopic, setEditingTopic] = useState(null)
+  const [activeTopicId, setActiveTopicId] = useState(() => getTopics()?.[0]?.id || null)
+  const activeTopic = useMemo(() => topics.find((t) => t.id === activeTopicId) || null, [topics, activeTopicId])
   const [search, setSearch] = useState("")
   const [toasts, setToasts] = useState([])
   const [loadingQuiz, setLoadingQuiz] = useState(false)
   const [showUpload, setShowUpload] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadedFile, setUploadedFile] = useState(null)
-  const uploadIntervalRef = useRef(null)
 
-  const activeTopic = useMemo(
-    () => topics.find((t) => t.id === activeTopicId) || null,
-    [topics, activeTopicId]
-  )
+  /** (optional) local editing topic state (keeps UI from code2) **/
+  const [editingTopic, setEditingTopic] = useState(null)
+  const fileInputRef = useRef(null)
 
   /** ---------- UTILS ---------- **/
   const addToast = (message, type = "info") => {
@@ -63,55 +60,131 @@ export default function Admin({ onHome }) {
 
   const saveAndSetTopics = (updated) => {
     setTopics(updated)
-    saveTopics(updated)
     setIsSaving(true)
-    setTimeout(() => setIsSaving(false), 1000)
+    saveTopics(updated)
+    setTimeout(() => setIsSaving(false), 500)
   }
 
-  /** ---------- FILE UPLOAD ---------- **/
-  const fileInputRef = useRef(null)
+  /** ---------- Topic CRUD (from code1) ---------- **/
+  const handleAddTopic = () => setShowUpload(true)
 
-  const handleFileSelect = (file) => {
+  const createEmptyTopic = () => {
+    const newTopic = {
+      id: Date.now().toString(),
+      title: "Untitled Topic",
+      description: "",
+      timer: 0,
+      keywords: [],
+      questions: [],
+    }
+    saveAndSetTopics([...topics, newTopic])
+    setActiveTopicId(newTopic.id)
+    addToast("Empty topic added", "success")
+    setShowUpload(false)
+  }
+
+  const handleDeleteTopic = (id) => {
+    if (!window.confirm("Delete this topic?")) return
+    const updated = topics.filter((t) => t.id !== id)
+    saveAndSetTopics(updated)
+    if (activeTopicId === id) setActiveTopicId(updated[0]?.id || null)
+    addToast("Topic deleted", "success")
+  }
+
+  const handleUpdateTopic = (id, key, value) => {
+    const updated = topics.map((t) => (t.id === id ? { ...t, [key]: value } : t))
+    saveAndSetTopics(updated)
+  }
+
+  const handleAddQuestion = (topicId) => {
+    const newQ = {
+      id: Date.now().toString(),
+      question: "Untitled Question",
+      options: ["", "", "", ""],
+      correct: 0,
+      hint: "",
+      explanation: "",
+    }
+    const updated = topics.map((t) =>
+      t.id === topicId ? { ...t, questions: [...(t.questions || []), newQ] } : t
+    )
+    saveAndSetTopics(updated)
+    addToast("Question added", "success")
+  }
+
+  const handleUpdateQuestion = (topicId, qid, updater) => {
+    const updated = topics.map((t) =>
+      t.id !== topicId
+        ? t
+        : { ...t, questions: (t.questions || []).map((q) => (q.id === qid ? updater(q) : q)) }
+    )
+    saveAndSetTopics(updated)
+  }
+
+  /** ---------- Generate Quiz From PDF (from code1, real API) ---------- **/
+  const handleUploadPdf = async (file) => {
     if (!file) return
     setUploadedFile(file)
     setLoadingQuiz(true)
-    setUploadProgress(0)
+    try {
+      const formData = new FormData()
+      formData.append("file", file)
+      const res = await fetch("/api/quiz/upload", { method: "POST", body: formData })
+      if (!res.ok) {
+        const text = await res.text().catch(() => "")
+        throw new Error(text || "Failed to process PDF")
+      }
 
-    uploadIntervalRef.current = setInterval(() => {
-      setUploadProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(uploadIntervalRef.current)
-          setLoadingQuiz(false)
-          addToast(`File "${file.name}" uploaded successfully!`, "success")
-          return 100
-        }
-        return prev + 10
-      })
-    }, 150)
+      const data = await res.json()
+      if (!data.questions) throw new Error("No questions returned")
+
+      const newTopic = {
+        id: Date.now().toString(),
+        title: data.title || "New PDF Topic",
+        description: data.description || "",
+        timer: 0,
+        keywords: [],
+        questions: data.questions.map((q, i) => ({
+          id: q.id || String(i + 1),
+          question: q.question,
+          // Accept both 'options' or fallback to array if missing
+          options: q.options || q.opts || ["", "", "", ""],
+          // keep original code1 shape: use 'correct' index if provided, else attempt to map other fields
+          correct: typeof q.answer === "number" ? q.answer : q.correct ?? 0,
+          hint: q.hint || "",
+          explanation: q.explanation || "",
+          // also preserve 'answer' field if API supplies string answer
+          answer: q.answer && typeof q.answer !== "number" ? q.answer : undefined,
+        })),
+      }
+
+      saveAndSetTopics([...topics, newTopic])
+      setActiveTopicId(newTopic.id)
+      addToast("Topic created from PDF", "success")
+      setShowUpload(false)
+    } catch (err) {
+      console.error(err)
+      addToast("Error generating quiz: " + (err.message || err), "warning")
+    } finally {
+      setLoadingQuiz(false)
+    }
   }
 
-  const handleCancelUpload = () => {
-    if (uploadIntervalRef.current) clearInterval(uploadIntervalRef.current)
-    setUploadedFile(null)
-    setLoadingQuiz(false)
-    setUploadProgress(0)
-    addToast("Upload cancelled", "error")
-  }
-
+  /** ---------- File input / drag-drop handlers (UI from code2 but calling real upload) ---------- **/
   const handleFileChange = (e) => {
     const file = e.target.files[0]
-    handleFileSelect(file)
+    if (file) handleUploadPdf(file)
   }
 
   const handleDrop = (e) => {
     e.preventDefault()
     const file = e.dataTransfer.files[0]
-    handleFileSelect(file)
+    if (file) handleUploadPdf(file)
   }
 
   const handleDragOver = (e) => e.preventDefault()
 
-  /** ---------- PDF GENERATION ---------- **/
+  /** ---------- PDF GENERATION (from code2) ---------- **/
   const handleDownloadPDF = () => {
     if (!activeTopic) {
       addToast("Please select a topic first!", "error")
@@ -147,10 +220,16 @@ export default function Admin({ onHome }) {
         })
       }
 
-      if (q.answer) {
+      // Print answer intelligently: prefer q.correct index (code1), otherwise q.answer (string)
+      const answerText =
+        typeof q.correct === "number" && q.options && q.options[q.correct] !== undefined
+          ? q.options[q.correct]
+          : q.answer || q.correct || ""
+
+      if (answerText) {
         yPos += 2
         doc.setTextColor(0, 102, 204)
-        doc.text(`Answer: ${q.answer}`, 20, yPos)
+        doc.text(`Answer: ${answerText}`, 20, yPos)
         doc.setTextColor(0, 0, 0)
         yPos += 10
       } else {
@@ -162,12 +241,14 @@ export default function Admin({ onHome }) {
     addToast(`Downloaded "${activeTopic.title}" as PDF`, "success")
   }
 
-  /** ---------- EDITING ---------- **/
+  /** ---------- Editing helpers (blend of both) ---------- **/
   const handleEditTopic = (topic) => {
-    setEditingTopic({ ...topic })
+    // create a deep-ish copy for safe editing in the UI
+    setEditingTopic(JSON.parse(JSON.stringify(topic)))
   }
 
   const handleSaveEditedTopic = () => {
+    if (!editingTopic) return
     const updated = topics.map((t) => (t.id === editingTopic.id ? editingTopic : t))
     saveAndSetTopics(updated)
     setEditingTopic(null)
@@ -175,20 +256,23 @@ export default function Admin({ onHome }) {
   }
 
   const handleQuestionChange = (index, field, value) => {
-    const updatedQuestions = [...editingTopic.questions]
-    updatedQuestions[index][field] = value
+    if (!editingTopic) return
+    const updatedQuestions = [...(editingTopic.questions || [])]
+    updatedQuestions[index] = { ...(updatedQuestions[index] || {}), [field]: value }
     setEditingTopic({ ...editingTopic, questions: updatedQuestions })
   }
 
-  const handleAddQuestion = () => {
-    const newQuestion = { question: "New question", options: ["", "", "", ""], answer: "" }
+  const handleAddQuestionEditing = () => {
+    if (!editingTopic) return
+    const newQuestion = { id: Date.now().toString(), question: "New question", options: ["", "", "", ""], correct: 0 }
     setEditingTopic({
       ...editingTopic,
       questions: [...(editingTopic.questions || []), newQuestion],
     })
   }
 
-  const handleDeleteQuestion = (index) => {
+  const handleDeleteQuestionEditing = (index) => {
+    if (!editingTopic) return
     const updatedQuestions = editingTopic.questions.filter((_, i) => i !== index)
     setEditingTopic({ ...editingTopic, questions: updatedQuestions })
   }
@@ -223,7 +307,6 @@ export default function Admin({ onHome }) {
     )
   }
 
-  /** ---------- MAIN DASHBOARD ---------- **/
   return (
     <div className="flex min-h-screen bg-gray-100 text-gray-900">
       {/* Sidebar */}
@@ -255,8 +338,61 @@ export default function Admin({ onHome }) {
             >
               Upload Quiz
             </button>
+            <button
+              onClick={() => {
+                // quickly create an empty topic from the sidebar
+                createEmptyTopic()
+              }}
+              className="block w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 mt-2"
+            >
+              + New Topic
+            </button>
           </nav>
+
+          {/* Topics list (compact) */}
+          <div className="p-4 overflow-y-auto h-[calc(100vh-300px)]">
+            <input
+              type="text"
+              placeholder="Search topics..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full p-2 rounded-lg border border-gray-700 bg-gray-800 text-white mb-3"
+            />
+            <div className="space-y-2">
+              {topics
+                .filter((t) => t.title.toLowerCase().includes(search.toLowerCase()))
+                .map((t) => (
+                  <div
+                    key={t.id}
+                    className={`p-2 rounded-md flex items-start justify-between cursor-pointer ${
+                      t.id === activeTopicId ? "bg-indigo-800 text-white" : "hover:bg-gray-800"
+                    }`}
+                  >
+                    <div className="flex-1" onClick={() => { setActiveTopicId(t.id); setEditingTopic(null) }}>
+                      <div className="font-semibold truncate">{t.title}</div>
+                      {t.description && <div className="text-xs text-gray-400 truncate">{t.description}</div>}
+                    </div>
+                    <div className="flex flex-col items-end ml-2">
+                      <button
+                        onClick={() => { handleDeleteTopic(t.id) }}
+                        className="text-sm text-red-400 hover:text-red-600"
+                        title="Delete topic"
+                      >
+                        ✕
+                      </button>
+                      <button
+                        onClick={() => handleEditTopic(t)}
+                        className="text-xs mt-2 bg-indigo-600 px-2 rounded text-white"
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          </div>
         </div>
+
         <div className="p-4 border-t border-gray-700">
           <button
             onClick={handleLogout}
@@ -277,12 +413,28 @@ export default function Admin({ onHome }) {
               ? "Upload Quiz Data"
               : "Manage Topics"}
           </h1>
-          <button
-            onClick={onHome}
-            className="bg-gray-800 text-white px-4 py-2 rounded-lg hover:bg-gray-700"
-          >
-            Home
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={onHome}
+              className="bg-gray-800 text-white px-4 py-2 rounded-lg hover:bg-gray-700"
+            >
+              Home
+            </button>
+            {!showUpload && !editingTopic && (
+              <button
+                onClick={() => {
+                  if (!activeTopic) {
+                    addToast("Select a topic to download PDF", "error")
+                    return
+                  }
+                  handleDownloadPDF()
+                }}
+                className="bg-gray-700 hover:bg-gray-800 text-white px-3 py-2 rounded-lg"
+              >
+                Download PDF
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Conditional Views */}
@@ -296,15 +448,23 @@ export default function Admin({ onHome }) {
                   setEditingTopic({ ...editingTopic, title: e.target.value })
                 }
               />
+              <div className="mb-4">
+                <textarea
+                  className="w-full border p-2 rounded-md"
+                  value={editingTopic.description || ""}
+                  onChange={(e) => setEditingTopic({ ...editingTopic, description: e.target.value })}
+                  placeholder="Description"
+                />
+              </div>
               <button
-                onClick={handleAddQuestion}
+                onClick={handleAddQuestionEditing}
                 className="bg-green-600 hover:bg-green-700 text-white text-sm px-3 py-1 rounded-md mb-4"
               >
                 + Add Question
               </button>
             </div>
             {editingTopic.questions?.map((q, i) => (
-              <div key={i} className="mb-6 border-b pb-4">
+              <div key={q.id || i} className="mb-6 border-b pb-4">
                 <input
                   className="w-full border p-2 rounded-md mb-2"
                   value={q.question}
@@ -312,13 +472,13 @@ export default function Admin({ onHome }) {
                     handleQuestionChange(i, "question", e.target.value)
                   }
                 />
-                {q.options?.map((opt, idx) => (
+                {(q.options || []).map((opt, idx) => (
                   <input
                     key={idx}
                     className="w-full border p-2 rounded-md mb-1 text-sm"
                     value={opt}
                     onChange={(e) => {
-                      const updatedOptions = [...q.options]
+                      const updatedOptions = [...(q.options || [])]
                       updatedOptions[idx] = e.target.value
                       handleQuestionChange(i, "options", updatedOptions)
                     }}
@@ -326,18 +486,21 @@ export default function Admin({ onHome }) {
                 ))}
                 <input
                   className="w-full border p-2 rounded-md mb-2 text-sm"
-                  placeholder="Correct answer"
-                  value={q.answer || ""}
+                  placeholder="Correct answer index (0-based) or text"
+                  value={q.correct ?? q.answer ?? ""}
                   onChange={(e) =>
-                    handleQuestionChange(i, "answer", e.target.value)
+                    // try to keep both shapes: if numeric, set correct; else set answer
+                    handleQuestionChange(i, isNaN(e.target.value) ? "answer" : "correct", isNaN(e.target.value) ? e.target.value : Number(e.target.value))
                   }
                 />
-                <button
-                  onClick={() => handleDeleteQuestion(i)}
-                  className="bg-red-600 hover:bg-red-700 text-white text-xs px-3 py-1 rounded-md"
-                >
-                  Delete Question
-                </button>
+                <div className="flex gap-2 mt-2">
+                  <button
+                    onClick={() => handleDeleteQuestionEditing(i)}
+                    className="bg-red-600 hover:bg-red-700 text-white text-xs px-3 py-1 rounded-md"
+                  >
+                    Delete Question
+                  </button>
+                </div>
               </div>
             ))}
             <div className="flex justify-between mt-4">
@@ -358,15 +521,18 @@ export default function Admin({ onHome }) {
         ) : !showUpload ? (
           <div>
             <div className="mb-4 flex items-center justify-between">
-              <input
-                type="text"
-                placeholder="Search topics..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="w-1/2 p-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-indigo-400"
-              />
-              {isSaving && <span className="text-sm text-gray-500">Saving...</span>}
+              <div className="flex items-center gap-3">
+                <input
+                  type="text"
+                  placeholder="Search topics..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="w-96 p-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-indigo-400"
+                />
+                {isSaving && <span className="text-sm text-gray-500">Saving...</span>}
+              </div>
             </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {topics
                 .filter((t) =>
@@ -385,6 +551,7 @@ export default function Admin({ onHome }) {
                     <p className="text-sm text-gray-600 mt-1">
                       {topic.questions?.length || 0} questions
                     </p>
+                    <p className="text-xs text-gray-500 mt-1 truncate">{topic.description}</p>
                     <div className="mt-3 flex gap-2">
                       <button
                         onClick={() => handleEditTopic(topic)}
@@ -401,6 +568,12 @@ export default function Admin({ onHome }) {
                       >
                         PDF
                       </button>
+                      <button
+                        onClick={() => { setActiveTopicId(topic.id) }}
+                        className="bg-gray-200 hover:bg-gray-300 text-gray-800 text-sm px-3 py-1 rounded-md"
+                      >
+                        Select
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -413,40 +586,29 @@ export default function Admin({ onHome }) {
               onDrop={handleDrop}
               onDragOver={handleDragOver}
               className="border-2 border-dashed border-gray-400 rounded-xl p-10 text-center cursor-pointer hover:border-indigo-400 transition"
-              onClick={() => fileInputRef.current.click()}
+              onClick={() => fileInputRef.current && fileInputRef.current.click()}
             >
               {uploadedFile ? (
                 <div>
                   <p className="font-medium text-gray-700 mb-3">
-                    File selected:{" "}
-                    <span className="text-indigo-600">{uploadedFile.name}</span>
+                    File selected: <span className="text-indigo-600">{uploadedFile.name}</span>
                   </p>
                   <div className="flex flex-col items-center justify-center">
-                    <div className="w-1/2">
-                      <ProgressBar loading={loadingQuiz} />
-                    </div>
                     {loadingQuiz ? (
                       <>
-                        <p className="text-sm text-gray-500 mt-2">
-                          Uploading... {uploadProgress}%
-                        </p>
-                        <button
-                          onClick={handleCancelUpload}
-                          className="mt-3 bg-red-600 hover:bg-red-700 text-white text-sm px-3 py-1 rounded-md"
-                        >
-                          Cancel Upload
-                        </button>
+                        <div className="w-1/2">
+                          <ProgressBar label="Processing PDF..." />
+                        </div>
+                        <p className="text-sm text-gray-500 mt-2">Processing...</p>
                       </>
                     ) : (
-                      <p className="text-green-600 font-medium mt-2">
-                        Upload complete 🎉
-                      </p>
+                      <p className="text-green-600 font-medium mt-2">Ready to upload — click here to reselect or drop a new file</p>
                     )}
                   </div>
                 </div>
               ) : (
                 <p className="text-gray-600">
-                  Drag and drop your quiz file here, or{" "}
+                  Drag and drop your quiz PDF here, or{" "}
                   <span className="text-indigo-600 underline">click to browse</span>
                 </p>
               )}
@@ -454,8 +616,32 @@ export default function Admin({ onHome }) {
                 type="file"
                 ref={fileInputRef}
                 onChange={handleFileChange}
+                accept="application/pdf"
                 className="hidden"
               />
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={() => {
+                  // if a file is selected but not processed, call upload
+                  if (uploadedFile && !loadingQuiz) {
+                    handleUploadPdf(uploadedFile)
+                  } else if (!uploadedFile) {
+                    fileInputRef.current && fileInputRef.current.click()
+                  }
+                }}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded-md"
+              >
+                Upload & Generate Quiz
+              </button>
+
+              <button
+                onClick={createEmptyTopic}
+                className="bg-gray-200 hover:bg-gray-300 text-gray-800 px-3 py-2 rounded-md"
+              >
+                Or create empty topic
+              </button>
             </div>
           </div>
         )}
