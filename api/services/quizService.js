@@ -73,6 +73,74 @@ function validateQuestionsArray(arr) {
   return true;
 }
 
+// --- New helper functions (for normalization & strict validation) ---
+function normalizeCorrectForQuestion(q) {
+  if (!q || !Array.isArray(q.options) || q.options.length !== 4) return null;
+  const corr = q.correct;
+  if (typeof corr === "number" && corr >= 1 && corr <= 4) return corr;
+
+  if (typeof corr === "string") {
+    const s = corr.trim();
+    const letter = s.match(/\b([A-Da-d])\b/);
+    if (letter) return letter[1].toUpperCase().charCodeAt(0) - 64;
+    const num = s.match(/\b([1-4])\b/);
+    if (num) return Number(num[1]);
+    const cleaned = s.replace(/^answer[:\-\s]*/i, "").trim();
+    for (let i = 0; i < 4; i++) {
+      const opt = q.options[i]?.toLowerCase() || "";
+      if (opt === cleaned.toLowerCase()) return i + 1;
+      if (opt.includes(cleaned.toLowerCase())) return i + 1;
+      if (cleaned.toLowerCase().includes(opt)) return i + 1;
+    }
+  }
+  return null;
+}
+
+function findAnswerByKeyword(sectionText, options) {
+  if (!sectionText) return null;
+  const t = sectionText.toLowerCase();
+  let best = null;
+  let bestScore = 0;
+  for (let i = 0; i < options.length; i++) {
+    const opt = (options[i] || "").toLowerCase();
+    const words = opt.split(/\W+/).filter(Boolean).slice(0, 6);
+    let score = 0;
+    for (const w of words) {
+      if (w.length < 3) continue;
+      const re = new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g");
+      const m = t.match(re);
+      if (m) score += m.length;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = i + 1;
+    }
+  }
+  return bestScore > 0 ? best : null;
+}
+
+function validateQuestionsArrayStrict(arr) {
+  if (!Array.isArray(arr)) return false;
+  for (const q of arr) {
+    if (
+      !q ||
+      typeof q !== "object" ||
+      !q.question ||
+      !Array.isArray(q.options) ||
+      q.options.length !== 4 ||
+      new Set(q.options.map(o => (o || "").trim().toLowerCase())).size !== 4 ||
+      typeof q.hint !== "string" ||
+      typeof q.explanation !== "string" ||
+      typeof q.correct !== "number" ||
+      q.correct < 1 ||
+      q.correct > 4
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // --- Local fallback ---
 function localGenerator(text, numQuestions = 5) {
   const sentences = text
@@ -107,7 +175,6 @@ function localGenerator(text, numQuestions = 5) {
 // --- Helpers for topic/subtopic segmentation ---
 function splitIntoTopics(text) {
   const lessons = text.split(/(?=LESSON\s*[-–]?\s*\d+)/gi).map(t => t.trim()).filter(Boolean);
-
   if (lessons.length <= 1) {
     const chunks = [];
     for (let i = 0; i < text.length; i += 2500) {
@@ -138,7 +205,6 @@ export async function generateQuizFromText(text, numQuestions = 5) {
 
   const topics = splitIntoTopics(text);
   console.log(`🧩 Found ${topics.length} major topics`);
-
   const allQuestions = [];
 
   for (let t = 0; t < topics.length; t++) {
@@ -172,10 +238,14 @@ ${subText.slice(0, 5000)}
         const response = await openai.chat.completions.create({
           model: MODEL,
           messages: [
-            { role: "system", content: "You are a precise quiz generator that outputs strict JSON arrays only." },
+            {
+              role: "system",
+              content:
+                "You are a precise quiz generator that outputs strict JSON arrays only. Return ONLY valid JSON: an array of objects with keys question, options (4 items), hint, correct (integer 1-4), explanation.",
+            },
             { role: "user", content: prompt },
           ],
-          temperature: 0.6,
+          temperature: 0.0,
           max_tokens: 1500,
         });
 
@@ -184,54 +254,96 @@ ${subText.slice(0, 5000)}
         let parsed = [];
 
         try {
-  parsed = JSON.parse(jsonString);
-} catch (err) {
-  console.warn(`⚠️ JSON parse failed for ${topicTitle} → ${subTitle}:`, err.message);
-
-  // Attempt repair with regex cleaner first
-  try {
-    parsed = JSON.parse(repairJsonString(jsonString));
-  } catch (repairErr) {
-    console.warn(`⚠️ Repair attempt failed for ${topicTitle} → ${subTitle}:`, repairErr.message);
-
-    // 🧠 New fallback: ask AI to fix its own malformed JSON
-    try {
-      const repairPrompt = `
+          parsed = JSON.parse(jsonString);
+        } catch (err) {
+          console.warn(`⚠️ JSON parse failed for ${topicTitle} → ${subTitle}:`, err.message);
+          try {
+            parsed = JSON.parse(repairJsonString(jsonString));
+          } catch (repairErr) {
+            console.warn(`⚠️ Repair attempt failed for ${topicTitle} → ${subTitle}:`, repairErr.message);
+            try {
+              const repairPrompt = `
 The following JSON for quiz questions is malformed. Please fix the syntax
 and return ONLY a valid JSON array (no markdown, no explanations).
 
 Broken JSON:
 ${jsonString.slice(0, 6000)}
 `;
-      const fixResponse = await openai.chat.completions.create({
-        model: MODEL,
-        messages: [
-          { role: "system", content: "You are a JSON repair assistant." },
-          { role: "user", content: repairPrompt },
-        ],
-        temperature: 0,
-        max_tokens: 1500,
-      });
-      const fixedRaw = fixResponse.choices?.[0]?.message?.content || "";
-      const fixedJson = findJsonCodeBlock(fixedRaw) || findBalanced(fixedRaw) || repairJsonString(fixedRaw);
-      parsed = JSON.parse(fixedJson);
-      console.log(`🔧 Successfully repaired malformed JSON for ${topicTitle} → ${subTitle}`);
-    } catch (fixErr) {
-      console.warn(`🚨 JSON repair also failed for ${topicTitle} → ${subTitle}:`, fixErr.message);
-      parsed = [];
-    }
-  }
-}
-        if (validateQuestionsArray(parsed)) {
-          parsed.forEach((q, idx) => {
-            q.id = `${t + 1}-${s + 1}-${idx + 1}`;
-            q.topic = topicTitle;
-            q.subTopic = subTitle;
-          });
+              const fixResponse = await openai.chat.completions.create({
+                model: MODEL,
+                messages: [
+                  { role: "system", content: "You are a JSON repair assistant." },
+                  { role: "user", content: repairPrompt },
+                ],
+                temperature: 0.0,
+                max_tokens: 1500,
+              });
+              const fixedRaw = fixResponse.choices?.[0]?.message?.content || "";
+              const fixedJson = findJsonCodeBlock(fixedRaw) || findBalanced(fixedRaw) || repairJsonString(fixedRaw);
+              parsed = JSON.parse(fixedJson);
+              console.log(`🔧 Successfully repaired malformed JSON for ${topicTitle} → ${subTitle}`);
+            } catch (fixErr) {
+              console.warn(`🚨 JSON repair also failed for ${topicTitle} → ${subTitle}:`, fixErr.message);
+              parsed = [];
+            }
+          }
+        }
+
+        // --- Normalize & verify answers ---
+        for (let qi = 0; qi < parsed.length; qi++) {
+          const q = parsed[qi];
+          if (!q.options || !Array.isArray(q.options))
+            q.options = (q.options || "").split("|").slice(0, 4).map(s => (s || "").trim());
+
+          let normalized = normalizeCorrectForQuestion(q);
+          if (!normalized) normalized = findAnswerByKeyword(subText, q.options || []);
+
+          if (!normalized) {
+            try {
+              const verifyPrompt = `
+Reference section:
+${subText.slice(0, 2000)}
+
+Question:
+${q.question}
+
+Options:
+1) ${q.options[0] || ""}
+2) ${q.options[1] || ""}
+3) ${q.options[2] || ""}
+4) ${q.options[3] || ""}
+
+Return ONLY the single integer (1, 2, 3, or 4) that is the correct option according to the Reference section.
+`;
+              const verifyResp = await openai.chat.completions.create({
+                model: MODEL,
+                messages: [
+                  { role: "system", content: "You are an objective answer verifier. Provide only an index 1-4 that matches the reference text." },
+                  { role: "user", content: verifyPrompt },
+                ],
+                temperature: 0.0,
+                max_tokens: 10,
+              });
+              const verifiedRaw = verifyResp.choices?.[0]?.message?.content || "";
+              const m = verifiedRaw.match(/\b([1-4])\b/);
+              if (m) normalized = Number(m[1]);
+            } catch (verErr) {
+              console.warn("Verifier failed:", verErr.message);
+              normalized = null;
+            }
+          }
+
+          q.correct = normalized || null;
+          q.id = `${t + 1}-${s + 1}-${qi + 1}`;
+          q.topic = topicTitle;
+          q.subTopic = subTitle;
+        }
+
+        if (validateQuestionsArrayStrict(parsed)) {
           allQuestions.push(...parsed);
-          console.log(`✅ ${parsed.length} questions generated for ${topicTitle} → ${subTitle}`);
+          console.log(`✅ ${parsed.length} questions generated for ${topicTitle} → ${subTitle} (verified)`);
         } else {
-          console.warn(`⚠️ Invalid AI quiz JSON, using local fallback for ${topicTitle} → ${subTitle}`);
+          console.warn(`⚠️ Invalid AI quiz JSON after verification; using local fallback for ${topicTitle} → ${subTitle}`);
           const fallbackQs = localGenerator(subText, dynamicCount);
           fallbackQs.forEach((q, idx) => {
             q.id = `${t + 1}-${s + 1}-L${idx + 1}`;
