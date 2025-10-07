@@ -36,7 +36,7 @@ export default function Admin({ onHome }) {
     localStorage.removeItem("isAuthenticated")
   }
 
-  /** ---------- TOPIC STATE (from code1) ---------- **/
+  /** ---------- TOPIC STATE ---------- **/
   const [topics, setTopics] = useState(() => getTopics() || [])
   const [activeTopicId, setActiveTopicId] = useState(() => getTopics()?.[0]?.id || null)
   const activeTopic = useMemo(() => topics.find((t) => t.id === activeTopicId) || null, [topics, activeTopicId])
@@ -121,7 +121,7 @@ export default function Admin({ onHome }) {
     saveAndSetTopics(updated)
   }
 
-  /** ---------- Generate Quiz From PDF (from code1, real API) ---------- **/
+  /** ---------- Generate Quiz From PDF ---------- **/
   const handleUploadPdf = async (file) => {
     if (!file) return
     setUploadedFile(file)
@@ -170,7 +170,7 @@ export default function Admin({ onHome }) {
     }
   }
 
-  /** ---------- File input / drag-drop handlers (UI from code2 but calling real upload) ---------- **/
+  /** ---------- File input / drag-drop handlers ---------- **/
   const handleFileChange = (e) => {
     const file = e.target.files[0]
     if (file) handleUploadPdf(file)
@@ -184,7 +184,7 @@ export default function Admin({ onHome }) {
 
   const handleDragOver = (e) => e.preventDefault()
 
-  /** ---------- PDF GENERATION (from code2) ---------- **/
+  /** ---------- PDF GENERATION ---------- **/
   const handleDownloadPDF = () => {
     if (!activeTopic) {
       addToast("Please select a topic first!", "error")
@@ -241,7 +241,7 @@ export default function Admin({ onHome }) {
     addToast(`Downloaded "${activeTopic.title}" as PDF`, "success")
   }
 
-  /** ---------- Editing helpers (blend of both) ---------- **/
+  /** ---------- Editing helpers ---------- **/
   const handleEditTopic = (topic) => {
     // create a deep-ish copy for safe editing in the UI
     setEditingTopic(JSON.parse(JSON.stringify(topic)))
@@ -310,99 +310,58 @@ export default function Admin({ onHome }) {
   return (
     <div className="flex min-h-screen bg-gray-100 text-gray-900">
       {/* Sidebar */}
-      <aside className="w-64 bg-gray-900 text-gray-100 flex flex-col justify-between">
-        <div>
-          <div className="p-4 border-b border-gray-700">
-            <h2 className="text-xl font-semibold text-indigo-400">Quizway Admin</h2>
-          </div>
-          <nav className="p-4 space-y-2">
-            <button
-              onClick={() => {
-                setShowUpload(false)
-                setEditingTopic(null)
-              }}
-              className={`block w-full text-left px-3 py-2 rounded-lg ${
-                !showUpload ? "bg-indigo-600 text-white" : "hover:bg-gray-800"
-              }`}
-            >
-              Topics
-            </button>
-            <button
-              onClick={() => {
-                setShowUpload(true)
-                setEditingTopic(null)
-              }}
-              className={`block w-full text-left px-3 py-2 rounded-lg ${
-                showUpload ? "bg-indigo-600 text-white" : "hover:bg-gray-800"
-              }`}
-            >
-              Upload Quiz
-            </button>
-            <button
-              onClick={() => {
-                // quickly create an empty topic from the sidebar
-                createEmptyTopic()
-              }}
-              className="block w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 mt-2"
-            >
-              + New Topic
-            </button>
-          </nav>
+<aside className="w-64 bg-gray-900 text-gray-100 flex flex-col justify-between">
+  <div>
+    {/* Header */}
+    <div className="p-4 border-b border-gray-700">
+      <h2 className="text-xl font-semibold text-indigo-400">Quizway Admin</h2>
+    </div>
 
-          {/* Topics list (compact) */}
-          <div className="p-4 overflow-y-auto h-[calc(100vh-300px)]">
-            <input
-              type="text"
-              placeholder="Search topics..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full p-2 rounded-lg border border-gray-700 bg-gray-800 text-white mb-3"
-            />
-            <div className="space-y-2">
-              {topics
-                .filter((t) => t.title.toLowerCase().includes(search.toLowerCase()))
-                .map((t) => (
-                  <div
-                    key={t.id}
-                    className={`p-2 rounded-md flex items-start justify-between cursor-pointer ${
-                      t.id === activeTopicId ? "bg-indigo-800 text-white" : "hover:bg-gray-800"
-                    }`}
-                  >
-                    <div className="flex-1" onClick={() => { setActiveTopicId(t.id); setEditingTopic(null) }}>
-                      <div className="font-semibold truncate">{t.title}</div>
-                      {t.description && <div className="text-xs text-gray-400 truncate">{t.description}</div>}
-                    </div>
-                    <div className="flex flex-col items-end ml-2">
-                      <button
-                        onClick={() => { handleDeleteTopic(t.id) }}
-                        className="text-sm text-red-400 hover:text-red-600"
-                        title="Delete topic"
-                      >
-                        ✕
-                      </button>
-                      <button
-                        onClick={() => handleEditTopic(t)}
-                        className="text-xs mt-2 bg-indigo-600 px-2 rounded text-white"
-                      >
-                        Edit
-                      </button>
-                    </div>
-                  </div>
-                ))}
-            </div>
-          </div>
-        </div>
+    {/* Navigation */}
+    <nav className="p-4 space-y-2">
+      <button
+        onClick={() => {
+          setShowUpload(false)
+          setEditingTopic(null)
+        }}
+        className={`block w-full text-left px-3 py-2 rounded-lg ${
+          !showUpload ? "bg-indigo-600 text-white" : "hover:bg-gray-800"
+        }`}
+      >
+        Topics
+      </button>
 
-        <div className="p-4 border-t border-gray-700">
-          <button
-            onClick={handleLogout}
-            className="w-full bg-red-600 hover:bg-red-700 px-3 py-2 rounded-lg text-left"
-          >
-            Logout
-          </button>
-        </div>
-      </aside>
+      <button
+        onClick={() => {
+          setShowUpload(true)
+          setEditingTopic(null)
+        }}
+        className={`block w-full text-left px-3 py-2 rounded-lg ${
+          showUpload ? "bg-indigo-600 text-white" : "hover:bg-gray-800"
+        }`}
+      >
+        Upload Quiz
+      </button>
 
+      <button
+        onClick={() => createEmptyTopic()}
+        className="block w-full text-left px-3 py-2 rounded-lg hover:bg-gray-800 mt-2"
+      >
+        + New Topic
+      </button>
+    </nav>
+  </div>
+
+  {/* Logout */}
+  <div className="p-4 border-t border-gray-700">
+    <button
+      onClick={handleLogout}
+      className="w-full bg-red-600 hover:bg-red-700 px-3 py-2 rounded-lg text-left"
+    >
+      Logout
+    </button>
+  </div>
+</aside>
       {/* Main Content */}
       <main className="flex-1 p-8 overflow-y-auto">
         <div className="flex justify-between items-center mb-6">
