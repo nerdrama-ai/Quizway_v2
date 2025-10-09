@@ -7,3 +7,7 @@ pdf2image
 pillow
 pytesseract
 requests
+opencv-python
+numpy
+# Optional (powerful but heavy). Install only if you want layout-aware DL models:
+# layoutparser
