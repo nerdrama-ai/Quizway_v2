@@ -35,8 +35,8 @@ function QuestionRenderer({ text }) {
       try {
         window.katex.renderMathInElement(el, {
           delimiters: [
-            { left: "\\(", right: "\\)", display: false }, // inline
-            { left: "\\[", right: "\\]", display: true }, // block
+            { left: "\\(", right: "\\)", display: false },
+            { left: "\\[", right: "\\]", display: true },
           ],
           throwOnError: false,
         });
@@ -215,7 +215,7 @@ export default function Quiz({ topic, onBack, onComplete }) {
               </button>
             ) : (
               <div className="p-4 rounded-lg bg-indigo-900/50 border border-indigo-400 text-indigo-200 shadow-md">
-                {curQ.hint}
+                <QuestionRenderer text={curQ.hint || ""} />
               </div>
             )}
           </div>
@@ -224,7 +224,8 @@ export default function Quiz({ topic, onBack, onComplete }) {
         {/* Explanation */}
         {locked && curQ.explanation && (
           <div className="mt-6 p-4 rounded-lg bg-emerald-900/40 border border-emerald-400 text-emerald-200 shadow-md">
-            ✅ Explanation: {curQ.explanation}
+            <p className="font-semibold mb-2">✅ Explanation:</p>
+            <QuestionRenderer text={curQ.explanation || ""} />
           </div>
         )}
       </div>
