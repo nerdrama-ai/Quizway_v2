@@ -1,5 +1,58 @@
-// FILE: src/components/Quiz.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
+
+/**
+ * Renders question text with support for:
+ * - Inline math: \( ... \), [MATH:...]
+ * - Block math: \[ ... \] or [MATHBLOCK:...]
+ * - Images: ![](url) or [IMG_URL:...]
+ */
+function QuestionRenderer({ text }) {
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    if (window.katex) {
+      const el = containerRef.current;
+
+      // Normalize placeholders before rendering
+      let html = text
+        .replace(/\[IMG_URL:(https?:[^\]]+)\]/g, "![]($1)")
+        .replace(/\[MATHBLOCK:([^\]]+)\]/g, "\\[$1\\]")
+        .replace(/\[MATH:([^\]]+)\]/g, "\\($1\\)");
+
+      // Convert markdown-like images
+      html = html.replace(/!\[\]\((.*?)\)/g, (_, url) => {
+        return `<img src="${url}" alt="diagram" 
+          class="my-4 rounded-lg max-h-80 object-contain mx-auto shadow-lg border border-white/10" />`;
+      });
+
+      // Line breaks
+      html = html.replace(/\n/g, "<br/>");
+
+      el.innerHTML = html;
+
+      // Render KaTeX math (inline + block)
+      try {
+        window.katex.renderMathInElement(el, {
+          delimiters: [
+            { left: "\\(", right: "\\)", display: false }, // inline
+            { left: "\\[", right: "\\]", display: true }, // block
+          ],
+          throwOnError: false,
+        });
+      } catch (err) {
+        console.warn("⚠️ KaTeX render error:", err.message);
+      }
+    }
+  }, [text]);
+
+  return (
+    <div
+      ref={containerRef}
+      className="text-2xl font-semibold mb-8 text-slate-100 leading-relaxed text-center prose prose-invert max-w-none"
+    ></div>
+  );
+}
 
 export default function Quiz({ topic, onBack, onComplete }) {
   const total = topic.questions.length;
@@ -9,9 +62,7 @@ export default function Quiz({ topic, onBack, onComplete }) {
   const [finished, setFinished] = useState(false);
   const [score, setScore] = useState(0);
   const [showHint, setShowHint] = useState(false);
-
-  // === TIMER STATE ===
-  const [timeLeft, setTimeLeft] = useState(topic.timer || null); // seconds
+  const [timeLeft, setTimeLeft] = useState(topic.timer || null);
 
   useEffect(() => {
     setIdx(0);
@@ -23,7 +74,7 @@ export default function Quiz({ topic, onBack, onComplete }) {
     setTimeLeft(topic.timer || null);
   }, [topic.id]);
 
-  // Countdown effect
+  // Countdown timer
   useEffect(() => {
     if (!timeLeft || finished) return;
     if (timeLeft <= 0) {
@@ -56,7 +107,6 @@ export default function Quiz({ topic, onBack, onComplete }) {
     }
   }
 
-  // === COMPLETED SCREEN ===
   if (finished) {
     return (
       <div className="p-10 text-center bg-white/10 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl max-w-2xl mx-auto">
@@ -77,10 +127,8 @@ export default function Quiz({ topic, onBack, onComplete }) {
     );
   }
 
-  // === MAIN QUIZ SCREEN ===
   const curQ = topic.questions[idx];
 
-  // Format timer (mm:ss)
   const formatTime = (s) => {
     const m = Math.floor(s / 60);
     const sec = s % 60;
@@ -118,9 +166,9 @@ export default function Quiz({ topic, onBack, onComplete }) {
         <div className="mb-3 text-sm text-slate-400">
           Question {idx + 1} of {total}
         </div>
-        <div className="text-2xl font-semibold mb-8 text-slate-100">
-          {curQ.question}
-        </div>
+
+        {/* 🔹 Question text (rich renderer) */}
+        <QuestionRenderer text={curQ.question || ""} />
 
         {/* Options */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -155,7 +203,7 @@ export default function Quiz({ topic, onBack, onComplete }) {
           })}
         </div>
 
-        {/* Hint Section */}
+        {/* Hint */}
         {!locked && curQ.hint && (
           <div className="mt-6 text-center">
             {!showHint ? (
@@ -173,7 +221,7 @@ export default function Quiz({ topic, onBack, onComplete }) {
           </div>
         )}
 
-        {/* Explanation Section */}
+        {/* Explanation */}
         {locked && curQ.explanation && (
           <div className="mt-6 p-4 rounded-lg bg-emerald-900/40 border border-emerald-400 text-emerald-200 shadow-md">
             ✅ Explanation: {curQ.explanation}
