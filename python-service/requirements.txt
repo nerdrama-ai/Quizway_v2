@@ -9,5 +9,6 @@ pytesseract
 requests
 opencv-python
 numpy
-# Optional (powerful but heavy). Install only if you want layout-aware DL models:
-# layoutparser
+pix2tex[api]
+torch
+pillow
