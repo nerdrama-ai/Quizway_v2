@@ -19,6 +19,7 @@ import base64
 import logging
 from uuid import uuid4
 from typing import List, Dict, Any
+import asyncio
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 import uvicorn
@@ -41,6 +42,16 @@ try:
 except Exception:
     HAS_LAYOUTPARSER = False
 
+# Optional: pix2tex (LaTeX-OCR) integration
+HAS_PIX2TEX = False
+latex_model = None
+try:
+    # Do not import at top-level if we might not have torch installed in some environments.
+    from pix2tex.cli import LatexOCR  # type: ignore
+    HAS_PIX2TEX = True
+except Exception:
+    HAS_PIX2TEX = False
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pdf_service")
@@ -60,70 +71,49 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 
 app = FastAPI(title="Quizway PDF Service (advanced, improved)")
 
-
 # ---------------------------
 # Text normalization helpers
 # ---------------------------
 def fix_mojibake(s: str) -> str:
-    """
-    Try to fix typical mojibake/double-encoding artifacts.
-    Heuristics: if string contains 'Ã' / 'Â' / replacement char, attempt re-encoding.
-    """
     if not s:
         return s
-    # quick replacements for common artifacts
-    s = s.replace("\u00A0", " ")  # non-breaking space
-    s = s.replace("\u200b", "")  # zero width space
-    s = s.replace("\ufeff", "")  # BOM
-    # If we see common UTF-8 mis-decode signs, try re-encode-from-latin1
+    s = s.replace("\u00A0", " ")
+    s = s.replace("\u200b", "")
+    s = s.replace("\ufeff", "")
     if "Ã" in s or "Â" in s or "\ufffd" in s:
         try:
             candidate = s.encode("latin-1", errors="ignore").decode("utf-8", errors="replace")
-            # If candidate reduces the replacement-char count, keep it
             if candidate.count("\ufffd") < s.count("\ufffd"):
                 s = candidate
         except Exception:
             pass
-    # Normalize Unicode (NFKC to collapse compatibility chars)
     try:
         s = unicodedata.normalize("NFKC", s)
     except Exception:
         pass
-    # Remove stray replacement characters and control chars
     s = re.sub(r"[\uFFFD\x00-\x1F\x7F]", "", s)
-    # Remove stray combining marks that sometimes get inserted
     s = re.sub(r"[\u0300-\u036f]", "", s)
-    # Remove stray isolated 'Â' or leftover artifacts
     s = s.replace("Â", "")
     return s
 
 
 def collapse_letter_gaps(s: str) -> str:
-    """
-    Fix sequences like: 'W�h�a�t' or 'W h a t' caused by weird spacing or replacement chars.
-    Heuristic: if we detect long runs where many tokens are single-letter, join them.
-    """
     if not s:
         return s
-    # remove isolated zero-width / replacement markers first
     s = s.replace("\u200b", "").replace("\ufeff", "")
     s = s.replace("\uFFFD", "")
-    # If text has many single-letter tokens separated by non-letter chars, reconstruct words
-    tokens = re.split(r'(\s+)', s)  # keep whitespace tokens
-    # detect sequences of single-letter tokens interleaved with spaces/markers
+    tokens = re.split(r'(\s+)', s)
     out_tokens = []
     i = 0
     while i < len(tokens):
         tok = tokens[i]
         if re.fullmatch(r"[A-Za-z]", tok):
-            # potential run
             run = [tok]
             j = i + 1
-            # gather pattern: (sep, letter)+
             while j + 1 < len(tokens) and re.fullmatch(r'\s+', tokens[j]) and re.fullmatch(r'[A-Za-z]', tokens[j+1]):
                 run.append(tokens[j+1])
                 j += 2
-            if len(run) >= 3:  # join if three or more single-letter tokens in a row
+            if len(run) >= 3:
                 joined = "".join(run)
                 out_tokens.append(joined)
                 i = j
@@ -134,14 +124,12 @@ def collapse_letter_gaps(s: str) -> str:
 
 
 def normalize_text(s: str) -> str:
-    """Full normalization pass to fix common PDF extraction artifacts."""
     if not s:
         return s
-    s = s.replace("\x00", "")  # remove nulls
+    s = s.replace("\x00", "")
     s = s.replace("\xa0", " ")
     s = fix_mojibake(s)
     s = collapse_letter_gaps(s)
-    # collapse multiple spaces and normalize newlines
     s = re.sub(r"[ \t]{2,}", " ", s)
     s = re.sub(r"\n{3,}", "\n\n", s)
     s = s.strip()
@@ -149,14 +137,12 @@ def normalize_text(s: str) -> str:
 
 
 # ---------------------------
-# Math detection & MathPix
+# Math detection & MathPix wrapper -> now prefers pix2tex
 # ---------------------------
 def is_likely_formula(ocr_text: str) -> bool:
-    """Heuristic to decide if OCR text is likely a math/formula snippet."""
     if not ocr_text:
         return False
     txt = ocr_text.strip()
-    # symbols often present in math
     math_symbols = set("=√∑∫π×÷^_()[]{}+-/\\<>|∞≤≥≈·")
     sym_count = sum(1 for c in txt if c in math_symbols)
     sym_ratio = sym_count / max(1, len(txt))
@@ -172,18 +158,37 @@ def is_likely_formula(ocr_text: str) -> bool:
     return False
 
 
+# New wrapper: prefer local LaTeX-OCR (pix2tex), fallback to Mathpix API if configured.
 def mathpix_recognize(image_path: str, timeout: int = 20) -> str:
     """
-    Try to recognize LaTeX using MathPix.
-    Returns LaTeX string on success or None on failure.
+    Backwards-compatible wrapper:
+    - If pix2tex (LaTeX-OCR) is installed and model initialized, use it synchronously here (caller should run it in a thread).
+    - Otherwise, if Mathpix credentials present, call Mathpix API.
+    - Returns LaTeX string on success or None on failure.
     """
+    # 1) Prefer pix2tex if available
+    global HAS_PIX2TEX, latex_model
+    if HAS_PIX2TEX and latex_model is not None:
+        try:
+            img = Image.open(image_path).convert("RGB")
+            # latex_model(...) returns a string (or list/tuple depending on version)
+            out = latex_model(img)
+            if isinstance(out, (list, tuple)):
+                out = out[0] if out else None
+            if isinstance(out, str):
+                return out.strip()
+            return None
+        except Exception as e:
+            logger.exception("pix2tex inference failed (falling back if possible): %s", e)
+            # fall through to Mathpix fallback if configured
+
+    # 2) Fallback: call Mathpix REST API if credentials set
     if not (MATHPIX_API_KEY or (MATHPIX_APP_ID and MATHPIX_APP_KEY)):
         return None
 
-    logger.info("mathpix_recognize: calling MathPix (if configured)")
+    logger.info("mathpix_recognize: calling Mathpix fallback")
     with open(image_path, "rb") as fh:
         b64 = base64.b64encode(fh.read()).decode()
-
     url = "https://api.mathpix.com/v3/text"
     headers = {"Content-type": "application/json"}
     if MATHPIX_API_KEY:
@@ -191,18 +196,15 @@ def mathpix_recognize(image_path: str, timeout: int = 20) -> str:
     else:
         headers["app_id"] = MATHPIX_APP_ID
         headers["app_key"] = MATHPIX_APP_KEY
-
     payload = {
         "src": f"data:image/png;base64,{b64}",
         "formats": ["latex_simplified", "text"],
         "ocr": {"math_inline_delimiters": [["$", "$"], ["\\(", "\\)"]]},
     }
-
     try:
         r = requests.post(url, json=payload, headers=headers, timeout=timeout)
         r.raise_for_status()
         resp = r.json()
-        # Look for typical fields
         latex = None
         if isinstance(resp, dict):
             for key in ("latex_simplified", "latex", "text"):
@@ -210,7 +212,6 @@ def mathpix_recognize(image_path: str, timeout: int = 20) -> str:
                 if isinstance(val, str) and val.strip():
                     latex = val.strip()
                     break
-            # fallback to nested 'data' structures
             if not latex and isinstance(resp.get("data"), list) and resp["data"]:
                 entry = resp["data"][0]
                 for key in ("latex_simplified", "latex", "text"):
@@ -219,20 +220,39 @@ def mathpix_recognize(image_path: str, timeout: int = 20) -> str:
                         break
         return latex
     except Exception as e:
-        logger.exception("MathPix request failed: %s", e)
+        logger.exception("Mathpix request failed: %s", e)
         return None
 
 
 # ---------------------------
-# Core endpoints
+# Initialize pix2tex model at startup (if available)
+# ---------------------------
+@app.on_event("startup")
+async def load_latex_model_at_startup():
+    """
+    If pix2tex is installed, initialize the model on startup.
+    This triggers checkpoint download (if not already cached) and keeps a singleton model instance.
+    """
+    global HAS_PIX2TEX, latex_model
+    if not HAS_PIX2TEX:
+        logger.info("pix2tex not installed — will use Mathpix fallback if configured.")
+        return
+    try:
+        logger.info("Initializing pix2tex (LaTeX-OCR) model at startup — this may take a while (downloads) ...")
+        # run model initialization off the event loop
+        loop = asyncio.get_running_loop()
+        latex_model = await asyncio.to_thread(LatexOCR)  # instantiate in a thread
+        logger.info("pix2tex model initialized successfully.")
+    except Exception as e:
+        latex_model = None
+        logger.exception("Failed to initialize pix2tex model at startup: %s", e)
+
+
+# ---------------------------
+# Core endpoints (unchanged except where we await mathpix_recognize in a thread)
 # ---------------------------
 @app.post("/extract-text")
 async def extract_text(file: UploadFile = File(...)):
-    """
-    Backwards-compatible endpoint:
-    - Uses pdfplumber first and falls back to PyPDF2
-    - Runs normalization on extracted text to fix encoding / spacing issues
-    """
     try:
         file_bytes = await file.read()
         if not file_bytes:
@@ -245,9 +265,7 @@ async def extract_text(file: UploadFile = File(...)):
         try:
             with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
                 for p in pdf.pages:
-                    # extract_text gives a block; combine with words for more control
                     page_text = p.extract_text() or ""
-                    # quick normalization to reduce garble
                     raw_pages.append(page_text)
             raw_text = "\n\n".join(raw_pages)
         except Exception:
@@ -273,13 +291,6 @@ async def extract_text(file: UploadFile = File(...)):
 
 @app.post("/extract-advanced")
 async def extract_advanced(file: UploadFile = File(...)):
-    """
-    Advanced extraction: returns structured pages, blocks and attachments.
-    Produces flattened `text` with placeholders:
-      - [IMG:filename.png]
-      - [MATH:latex_key] or [MATHBLOCK:latex_key]
-    Attachments include base64 content and optional ocr_text/latex.
-    """
     tmp_files_to_cleanup: List[str] = []
     try:
         file_bytes = await file.read()
@@ -333,7 +344,6 @@ async def extract_advanced(file: UploadFile = File(...)):
                 pdf_images = getattr(p, "images", None) or []
                 if page_image and pdf_images:
                     for img_idx, img_obj in enumerate(pdf_images):
-                        # Try a few attribute names; pdfplumber can vary
                         x0 = img_obj.get("x0") if "x0" in img_obj else img_obj.get("x")
                         top = img_obj.get("top") if "top" in img_obj else img_obj.get("y")
                         x1 = img_obj.get("x1") if "x1" in img_obj else (x0 + img_obj.get("width", 0) if x0 is not None else None)
@@ -362,14 +372,17 @@ async def extract_advanced(file: UploadFile = File(...)):
                                     except Exception:
                                         ocr_text = ""
 
-                                    # Decide if this is a formula and optionally try MathPix
+                                    # Decide if this is a formula and optionally try LaTeX-OCR (pix2tex) or Mathpix
                                     latex = None
                                     block_like = False
                                     if is_likely_formula(ocr_text):
-                                        # If the crop height relative to page is large, call it block math
                                         rel_h = (lower - upper) / max(1.0, page_image.height)
                                         block_like = rel_h > 0.08  # heuristic threshold
-                                        latex = mathpix_recognize(tmp_path) or None
+                                        # call the recognition wrapper in a thread (non-blocking)
+                                        try:
+                                            latex = await asyncio.to_thread(mathpix_recognize, tmp_path)
+                                        except Exception:
+                                            latex = None
 
                                     with open(tmp_path, "rb") as fh:
                                         b64 = base64.b64encode(fh.read()).decode()
@@ -415,7 +428,10 @@ async def extract_advanced(file: UploadFile = File(...)):
                         block_like = False
                         if is_likely_formula(page_ocr):
                             block_like = True
-                            latex = mathpix_recognize(tmp_path)
+                            try:
+                                latex = await asyncio.to_thread(mathpix_recognize, tmp_path)
+                            except Exception:
+                                latex = None
                         with open(tmp_path, "rb") as fh:
                             b64 = base64.b64encode(fh.read()).decode()
                         attachments.append({
@@ -468,17 +484,14 @@ async def extract_advanced(file: UploadFile = File(...)):
                         flattened_segments.append(txt)
                 elif b["type"] == "image":
                     fname = b.get("filename")
-                    # find corresponding attachment (should exist)
                     att = next((a for a in attachments if a.get("filename") == fname), None)
                     if att and att.get("latex"):
-                        # produce math placeholder; choose block vs inline
                         key = f"latex_{math_index}"
                         if att.get("block"):
                             tag = f"[MATHBLOCK:{key}]"
                         else:
                             tag = f"[MATH:{key}]"
                         flattened_segments.append(tag)
-                        # annotate attachment with latex_key
                         att["latex_key"] = key
                         math_index += 1
                     else:
@@ -498,7 +511,7 @@ async def extract_advanced(file: UploadFile = File(...)):
 
         response = {
             "success": True,
-            "text": cleaned_text,                # backward-compatible text
+            "text": cleaned_text,
             "length": len(cleaned_text),
             "pages": pages_out,
             "attachments": attachments,
@@ -506,11 +519,9 @@ async def extract_advanced(file: UploadFile = File(...)):
         return response
 
     except HTTPException:
-        # re-raise HTTP errors
         raise
     except Exception as e:
         logger.exception("extract-advanced error: %s", e)
-        # attempt cleanup
         try:
             for p in tmp_files_to_cleanup:
                 if os.path.exists(p):
@@ -521,5 +532,4 @@ async def extract_advanced(file: UploadFile = File(...)):
 
 
 if __name__ == "__main__":
-    # Run for local/dev: uvicorn pdf_service:app --host 0.0.0.0 --port 8000 --reload
     uvicorn.run("pdf_service:app", host="0.0.0.0", port=8000, reload=True)
