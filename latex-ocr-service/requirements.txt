@@ -1,5 +1,0 @@
-fastapi
-uvicorn
-pix2tex[api]
-torch
-pillow
